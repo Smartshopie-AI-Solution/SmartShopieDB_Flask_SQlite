@@ -5,8 +5,143 @@ import random
 DB_PATH = "smartshopie_dashboard.db"
 
 def ensure_tables(conn):
-    # no-op: assumes database_schema.sql already applied
-    pass
+    # Create realtime_metrics table if it doesn't exist (used by realtime monitor)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS realtime_metrics (
+            recorded_at TEXT PRIMARY KEY,
+            active_sessions INTEGER,
+            api_response_time_ms INTEGER,
+            cpu_usage_pct REAL,
+            memory_usage_pct REAL,
+            conversions_per_min INTEGER
+        )
+        """
+    )
+    # Billing & Usage tables
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_summary (
+            plan_name TEXT,
+            monthly_price REAL,
+            renewal_date TEXT,
+            subscription_amount REAL,
+            chat_amount REAL,
+            image_amount REAL,
+            questionnaire_amount REAL,
+            overage_amount REAL,
+            total_estimated REAL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usage_breakdown (
+            month TEXT,
+            usage_type TEXT,
+            used INTEGER,
+            free_limit INTEGER,
+            overage_rate TEXT,
+            overage_cost TEXT,
+            total_usage INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_payments (
+            payment_date TEXT,
+            description TEXT,
+            amount REAL,
+            status TEXT,
+            invoice_url TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usage_alerts (
+            level TEXT,
+            title TEXT,
+            message TEXT,
+            created_at TEXT
+        )
+        """
+    )
+    conn.commit()
+
+    # --- Lightweight migrations: add expected columns if missing ---
+    def ensure_column(table, col, coltype):
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = {r[1] for r in cur.fetchall()}
+        if col not in cols:
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+            except Exception:
+                pass
+
+    # API endpoints table to support API Health Monitoring widget
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_endpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            endpoint_name TEXT,
+            base_url TEXT,
+            avg_response_ms INTEGER,
+            success_rate REAL,
+            daily_calls INTEGER,
+            error_rate REAL,
+            last_checked TEXT
+        )
+        """
+    )
+
+    # billing_summary expected columns
+    for c, t in [
+        ('plan_name', 'TEXT'),
+        ('monthly_price', 'REAL'),
+        ('renewal_date', 'TEXT'),
+        ('subscription_amount', 'REAL'),
+        ('chat_amount', 'REAL'),
+        ('image_amount', 'REAL'),
+        ('questionnaire_amount', 'REAL'),
+        ('overage_amount', 'REAL'),
+        ('total_estimated', 'REAL'),
+    ]:
+        ensure_column('billing_summary', c, t)
+
+    # usage_breakdown expected columns
+    for c, t in [
+        ('month', 'TEXT'),
+        ('usage_type', 'TEXT'),
+        ('used', 'INTEGER'),
+        ('free_limit', 'INTEGER'),
+        ('overage_rate', 'TEXT'),
+        ('overage_cost', 'TEXT'),
+        ('total_usage', 'INTEGER'),
+    ]:
+        ensure_column('usage_breakdown', c, t)
+
+    # billing_payments expected columns
+    for c, t in [
+        ('payment_date', 'TEXT'),
+        ('description', 'TEXT'),
+        ('amount', 'REAL'),
+        ('status', 'TEXT'),
+        ('invoice_url', 'TEXT'),
+    ]:
+        ensure_column('billing_payments', c, t)
+
+    # usage_alerts expected columns
+    for c, t in [
+        ('level', 'TEXT'),
+        ('title', 'TEXT'),
+        ('message', 'TEXT'),
+        ('created_at', 'TEXT'),
+    ]:
+        ensure_column('usage_alerts', c, t)
+    conn.commit()
 
 def clear_recent_demo(conn, days=370):
     cur = conn.cursor()
@@ -20,14 +155,29 @@ def clear_recent_demo(conn, days=370):
         ("interaction_summary", "record_date"),
         ("revenue_summary", "record_date"),
         ("revenue_attribution", "record_date"),
+        ("revenue_forecasting", "record_date"),
         ("ai_model_performance", "record_date"),
         ("customer_satisfaction", "record_date"),
         ("customer_concerns", "record_date"),
         ("customer_lifetime_value", "record_date"),
         ("behavioral_patterns", "record_date"),
+        ("product_gaps", "record_date"),
+        ("category_performance", "record_date"),
+        ("product_analytics", "record_date"),
+        # realtime metrics uses recorded_at column
+        ("realtime_metrics", "recorded_at"),
+        ("billing_payments", "payment_date"),
+        ("usage_alerts", "created_at"),
+        # usage_breakdown stores month as TEXT but not necessarily DATE, skip date-based delete
     ]
+    # Clear date-based tables
     for table, col in tables_with_date:
         cur.execute(f"DELETE FROM {table} WHERE DATE({col}) >= DATE(?)", (since,))
+    # Manually clear usage_breakdown by month text (safe for reseed)
+    try:
+        cur.execute("DELETE FROM usage_breakdown")
+    except Exception:
+        pass
     conn.commit()
 
 def check_exists(cur, table, where_clause, params):
@@ -39,9 +189,10 @@ def check_exists(cur, table, where_clause, params):
 def seed_overview_kpis(conn, start_date: date, end_date: date):
     cur = conn.cursor()
     d = start_date
-    customers = 10000
-    ai_interactions = 20000
-    revenue = 800000.0
+    # Small business scale
+    customers = 600
+    ai_interactions = 1500
+    revenue = 150000.0  # INR
     inserted = 0
     skipped = 0
     while d <= end_date:
@@ -52,11 +203,11 @@ def seed_overview_kpis(conn, start_date: date, end_date: date):
             d += timedelta(days=1)
             continue
             
-        growth = random.uniform(-0.5, 1.5)
+        growth = random.uniform(-0.8, 1.8)
         customers = max(1000, int(customers * (1 + growth/100)))
-        conv_rate = max(5.0, min(40.0, 20.0 + random.uniform(-3, 3)))
-        ai_interactions = max(1000, int(ai_interactions * (1 + random.uniform(-1, 1)/100)))
-        revenue = max(100000.0, revenue * (1 + random.uniform(-1, 2)/100))
+        conv_rate = max(2.0, min(20.0, 10.0 + random.uniform(-3, 3)))
+        ai_interactions = max(200, int(ai_interactions * (1 + random.uniform(-1, 1)/100)))
+        revenue = max(20000.0, revenue * (1 + random.uniform(-2, 3)/100))
         cur.execute(
             """
             INSERT INTO overview_kpis(
@@ -97,7 +248,7 @@ def seed_conversion_funnel(conn, start_date: date, end_date: date):
     skipped = 0
     while d <= end_date:
         date_str = d.isoformat()
-        base = random.randint(8000, 20000)
+        base = random.randint(300, 1200)
         for name, order, pct in stages:
             # Check if record exists
             if check_exists(cur, "conversion_funnel", "record_date = ? AND stage_name = ?", (date_str, name)):
@@ -126,7 +277,7 @@ def seed_interaction_types(conn, start_date: date, end_date: date):
     skipped = 0
     while d <= end_date:
         date_str = d.isoformat()
-        total = random.randint(15000, 40000)
+        total = random.randint(500, 2000)
         weights = [random.uniform(0.25, 0.4), random.uniform(0.35, 0.5), random.uniform(0.1, 0.2), random.uniform(0.05, 0.15)]
         wsum = sum(weights)
         for n, w in zip(names, weights):
@@ -152,7 +303,7 @@ def seed_conversion_trends(conn, start_date: date, end_date: date):
     skipped = 0
     
     # Base conversion rate (will fluctuate around this)
-    base_conversion_rate = 15.0
+    base_conversion_rate = 9.0
     days_passed = 0
     previous_rate = base_conversion_rate
     trend_direction = 1  # 1 for up, -1 for down
@@ -257,7 +408,7 @@ def seed_conversion_trends(conn, start_date: date, end_date: date):
         current_rate = max(3.0, min(45.0, current_rate))
         
         # Calculate conversions based on rate (assuming ~10,000-12,000 daily visitors)
-        daily_visitors = random.randint(9500, 12500)
+        daily_visitors = random.randint(600, 1500)
         conversions = int(daily_visitors * current_rate / 100.0)
         ai_attr = int(conversions * random.uniform(0.55, 0.75))
         
@@ -272,31 +423,38 @@ def seed_conversion_trends(conn, start_date: date, end_date: date):
     conn.commit()
     print(f"  conversion_trends: {inserted} inserted, {skipped} skipped")
 
-def seed_customer_segments(conn, sample_date: date):
+def seed_customer_segments(conn, start_date: date, end_date: date):
+    """Seed customer_segments weekly across the range so periods differ."""
     cur = conn.cursor()
     segments = [
-        ("New Visitors", 3500, 15.0, 45.0),
-        ("Returning Customers", 2800, 38.0, 62.0),
-        ("Occasional Users", 1900, 22.0, 38.0),
-        ("Loyalists", 1200, 68.0, 95.0),
+        ("New Visitors", 220, 12.0, 35.0),
+        ("Returning Customers", 160, 30.0, 55.0),
+        ("Occasional Users", 120, 18.0, 30.0),
+        ("Loyalists", 80, 60.0, 85.0),
     ]
-    date_str = sample_date.isoformat()
+    d = start_date
     inserted = 0
     skipped = 0
-    for name, size, clv, aov in segments:
-        # Check if record exists
-        if check_exists(cur, "customer_segments", "record_date = ? AND segment_name = ?", (date_str, name)):
-            skipped += 1
-            continue
-            
-        cur.execute(
-            """
-            INSERT INTO customer_segments(record_date,segment_name,segment_size,percentage,avg_lifetime_value,avg_order_value)
-            VALUES(?,?,?,?,?,?)
-            """,
-            (date_str, name, size, None, clv, aov),
-        )
-        inserted += 1
+    random.seed(42)
+    while d <= end_date:
+        date_str = d.isoformat()
+        # Apply stronger drift/variation to make periods visibly different
+        drift = (d - start_date).days / 365.0
+        for name, base_size, clv, aov in segments:
+            size = int(base_size * (1.0 + random.uniform(-0.3, 0.3)) * (1.0 + drift * random.uniform(-0.25, 0.35)))
+            size = max(200, size)
+            if check_exists(cur, "customer_segments", "record_date = ? AND segment_name = ?", (date_str, name)):
+                skipped += 1
+                continue
+            cur.execute(
+                """
+                INSERT INTO customer_segments(record_date,segment_name,segment_size,percentage,avg_lifetime_value,avg_order_value)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (date_str, name, size, None, clv, aov),
+            )
+            inserted += 1
+        d += timedelta(days=7)
     conn.commit()
     print(f"  customer_segments: {inserted} inserted, {skipped} skipped")
 
@@ -310,15 +468,18 @@ def seed_interaction_summary(conn, start_date: date, end_date: date):
         # Check if record exists
         if check_exists(cur, "interaction_summary", "record_date = ?", (date_str,)):
             skipped += 1
-            d += timedelta(days=7)
+            d += timedelta(days=1)
             continue
             
-        total = random.randint(15000, 40000)
+        # Daily totals with weekly seasonality
+        dow = d.weekday()  # 0=Mon
+        base = 900 if dow < 5 else 650  # weekdays higher than weekends
+        total = int(base * random.uniform(0.9, 1.3))
         chat = int(total * random.uniform(0.35, 0.5))
         questionnaire = int(total * random.uniform(0.25, 0.4))
         image = int(total * random.uniform(0.1, 0.2))
         routine = max(0, total - chat - questionnaire - image)
-        avg_resp = random.uniform(120, 420)  # seconds
+        avg_resp = random.uniform(60, 240)  # seconds
         cur.execute(
             """
             INSERT INTO interaction_summary(
@@ -329,12 +490,15 @@ def seed_interaction_summary(conn, start_date: date, end_date: date):
             (date_str, total, chat, questionnaire, image, routine, round(avg_resp, 1)),
         )
         inserted += 1
-        d += timedelta(days=7)
+        d += timedelta(days=1)
     conn.commit()
     print(f"  interaction_summary: {inserted} inserted, {skipped} skipped")
 
 def seed_revenue_summary(conn, start_date: date, end_date: date):
-    """Seed revenue_summary table - monthly records"""
+    """Seed revenue_summary table - monthly records derived from attribution when available.
+
+    This keeps the top KPIs in Revenue Impact aligned with the Attribution chart totals.
+    """
     cur = conn.cursor()
     d = start_date
     inserted = 0
@@ -354,12 +518,23 @@ def seed_revenue_summary(conn, start_date: date, end_date: date):
                 d = date(d.year, d.month + 1, 1)
             continue
             
-        total_revenue_impact = random.uniform(600000, 1600000)
+        # Derive monthly total from daily attribution if present
+        next_month = date(d.year + (1 if d.month == 12 else 0), 1 if d.month == 12 else d.month + 1, 1)
+        cur.execute(
+            """
+            SELECT SUM(revenue_amount)
+            FROM revenue_attribution
+            WHERE DATE(record_date) >= DATE(?) AND DATE(record_date) < DATE(?)
+            """,
+            (date_str, next_month.isoformat()),
+        )
+        total_from_attr = cur.fetchone()[0]
+        total_revenue_impact = float(total_from_attr) if total_from_attr is not None else random.uniform(600000, 1600000)
         aov = random.uniform(120, 260)
         aov_with_ai = aov * random.uniform(1.1, 1.4)
         aov_improvement = ((aov_with_ai - aov) / max(aov, 1)) * 100.0
         investment = 25000.0
-        monthly_return = total_revenue_impact / 12.0
+        monthly_return = total_revenue_impact  # treat per-month total as monthly return for ROI
         roi_percentage = ((monthly_return - investment) / max(investment, 1)) * 100.0
         cur.execute(
             """
@@ -387,6 +562,69 @@ def seed_revenue_summary(conn, start_date: date, end_date: date):
     conn.commit()
     print(f"  revenue_summary: {inserted} inserted, {skipped} skipped")
 
+def seed_revenue_forecasting(conn, months_ahead: int = 6):
+    """Seed revenue_forecasting for the next N months using recent monthly totals.
+
+    Tries to insert into columns (forecast_date, forecast_value). If that fails,
+    it falls back to (forecast_date, predicted_revenue) to match alternate schemas.
+    """
+    cur = conn.cursor()
+    # Read last 6 revenue_summary rows (monthly totals)
+    cur.execute(
+        """
+        SELECT record_date, total_revenue_impact
+        FROM revenue_summary
+        ORDER BY DATE(record_date) DESC
+        LIMIT 6
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        print("  revenue_forecasting: skipped (no revenue_summary rows)")
+        return
+    rows = list(reversed(rows))  # chronological order
+    values = [float(r[1] or 0) for r in rows]
+    # Average recent growth (clamped)
+    growths = []
+    for i in range(1, len(values)):
+        prev = values[i-1] or 1.0
+        growths.append(max(-0.2, min(0.25, (values[i]-prev)/prev)))
+    avg_growth = sum(growths)/len(growths) if growths else 0.05
+
+    last_month = date.fromisoformat(rows[-1][0]) if isinstance(rows[-1][0], str) else rows[-1][0]
+    year, month = last_month.year, last_month.month
+    value = values[-1]
+    inserted = 0
+    today_str = date.today().isoformat()
+    for _ in range(months_ahead):
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+        mdate = date(year, month, 1)
+        value = max(0.0, value * (1.0 + avg_growth + random.uniform(-0.03, 0.03)))
+        if check_exists(cur, 'revenue_forecasting', 'forecast_date = ?', (mdate.isoformat(),)):
+            continue
+        try:
+            # Preferred schema without record_date
+            cur.execute(
+                "INSERT INTO revenue_forecasting(forecast_date, forecast_value) VALUES(?, ?)",
+                (mdate.isoformat(), round(value, 2))
+            )
+            inserted += 1
+        except Exception:
+            try:
+                # Schema with record_date/predicted_revenue/confidence_level
+                cur.execute(
+                    "INSERT INTO revenue_forecasting(record_date, forecast_date, predicted_revenue, confidence_level) VALUES(?, ?, ?, ?)",
+                    (today_str, mdate.isoformat(), round(value, 2), round(0.6 + random.uniform(-0.05, 0.05), 2))
+                )
+                inserted += 1
+            except Exception:
+                pass
+    conn.commit()
+    print(f"  revenue_forecasting: {inserted} inserted")
+
 def seed_revenue_attribution_daily(conn, start_date: date, end_date: date):
     """Seed revenue_attribution with DAILY data for the full year range"""
     cur = conn.cursor()
@@ -398,7 +636,7 @@ def seed_revenue_attribution_daily(conn, start_date: date, end_date: date):
     
     while d <= end_date:
         date_str = d.isoformat()
-        base = random.uniform(500000, 1200000)
+        base = random.uniform(20000, 120000)  # INR per day across features
         for feat, w in zip(features, weights):
             # Check if record exists
             if check_exists(cur, "revenue_attribution", "record_date = ? AND ai_feature = ?", (date_str, feat)):
@@ -774,22 +1012,21 @@ def seed_ai_performance(conn, start_date: date, end_date: date):
     while d <= end_date:
         date_str = d.isoformat()
         # Check if record exists
-        if check_exists(cur, "ai_model_performance", "record_date = ? AND model_name = ?", (date_str, "Model v2.3")):
-            skipped += 1
-            # Move to next month
-            if d.month == 12:
-                d = date(d.year + 1, 1, 1)
-            else:
-                d = date(d.year, d.month + 1, 1)
-            continue
-            
-        accuracy = random.uniform(90, 97)
-        response_ms = random.randint(700, 1400)
-        cur.execute(
-            "INSERT INTO ai_model_performance(record_date,model_name,accuracy,response_time_ms) VALUES(?,?,?,?)",
-            (date_str, "Model v2.3", round(accuracy, 2), response_ms),
-        )
-        inserted += 1
+        # Seed three comparative models per month
+        models = [
+            ("Baseline v1.0", random.uniform(86, 91), random.randint(1200, 1800)),
+            ("Model v2.2", random.uniform(89, 94), random.randint(900, 1500)),
+            ("Model v2.3", random.uniform(91, 96), random.randint(700, 1400)),
+        ]
+        for name, acc, resp in models:
+            if check_exists(cur, "ai_model_performance", "record_date = ? AND model_name = ?", (date_str, name)):
+                skipped += 1
+                continue
+            cur.execute(
+                "INSERT INTO ai_model_performance(record_date,model_name,accuracy,response_time_ms) VALUES(?,?,?,?)",
+                (date_str, name, round(acc, 2), resp),
+            )
+            inserted += 1
         # Move to next month
         if d.month == 12:
             d = date(d.year + 1, 1, 1)
@@ -797,6 +1034,340 @@ def seed_ai_performance(conn, start_date: date, end_date: date):
             d = date(d.year, d.month + 1, 1)
     conn.commit()
     print(f"  ai_model_performance: {inserted} inserted, {skipped} skipped")
+
+def seed_product_gaps(conn, start_date: date, end_date: date):
+    """Seed product gaps weekly across the range so aggregation by period varies."""
+    cur = conn.cursor()
+    # Base rows
+    base = [
+        ("Sulfate-Free Shampoo for Color-Treated Hair", "haircare", 900, 36000),
+        ("Overnight Sleeping Mask", "skincare", 760, 30000),
+        ("Scalp Treatment Serum", "haircare", 640, 32000),
+        ("Waterproof Mascara for Sensitive Eyes", "makeup", 520, 15500),
+        ("Body Acne Treatment Spray", "skincare", 410, 16500),
+        ("Fragrance-Free Moisturizer", "skincare", 395, 14900),
+        ("Tinted Mineral Sunscreen SPF 50", "skincare", 380, 22000),
+        ("Curl-Defining Leave-In Cream", "haircare", 360, 13000),
+        ("Brightening Eye Serum", "skincare", 340, 14000),
+        ("Hydrating Lip Treatment Balm", "makeup", 330, 9800),
+    ]
+    d = start_date
+    inserted = 0
+    random.seed(7)
+    while d <= end_date:
+        date_str = d.isoformat()
+        # Apply variation per week
+        for idx, (name, cat, req, rev) in enumerate(base, start=1):
+            # Skip if exists for this date+product
+            if check_exists(cur, "product_gaps", "record_date = ? AND product_name = ?", (date_str, name)):
+                continue
+            demand = int(req * random.uniform(0.85, 1.15))
+            potential = float(rev) * random.uniform(0.9, 1.1)
+            cur.execute(
+                """
+                INSERT INTO product_gaps(record_date, gap_rank, product_name, category, demand_score, potential_revenue)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (date_str, idx, name, cat, demand, round(potential, 2))
+            )
+            inserted += 1
+        d += timedelta(days=7)
+    conn.commit()
+    print(f"  product_gaps: {inserted} inserted")
+
+def seed_category_perf(conn, start_date: date, end_date: date):
+    """Seed category_performance monthly so we can derive cross-sell/upsell."""
+    cur = conn.cursor()
+    categories = [
+        'Skincare Sets', 'Anti-Aging', 'Haircare Bundles', 'Makeup Kits', 'Acne Treatment', 'Sensitive Skin'
+    ]
+    # Round start to month start
+    d = date(start_date.year, start_date.month, 1)
+    inserted = 0
+    random.seed(21)
+    while d <= end_date:
+        for cat in categories:
+            date_str = d.isoformat()
+            if check_exists(cur, 'category_performance', 'record_date = ? AND category_name = ?', (date_str, cat)):
+                continue
+            total_products = random.randint(15, 60)
+            views = random.randint(2000, 15000)
+            total_revenue = random.uniform(80000, 600000)  # INR per month per category
+            avg_conv = random.uniform(1.5, 5.0)  # %
+            ai_rate = random.uniform(15.0, 35.0)  # % of views driven by AI
+            cur.execute(
+                """
+                INSERT INTO category_performance(record_date, category_name, total_products, total_views, total_revenue, avg_conversion_rate, ai_recommendation_rate)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (date_str, cat, total_products, views, round(total_revenue, 2), round(avg_conv, 2), round(ai_rate, 2))
+            )
+            inserted += 1
+        # next month
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+    conn.commit()
+    print(f"  category_performance: {inserted} inserted")
+
+def seed_product_analytics(conn, start_date: date, end_date: date):
+    """Seed product_analytics daily for a handful of products."""
+    cur = conn.cursor()
+    products = [
+        ('prod-retinol-serum', 'Anti-Aging Retinol Serum', 'Skincare'),
+        ('prod-hyaluronic-set', 'Hydrating Hyaluronic Acid Set', 'Skincare'),
+        ('prod-vitc-kit', 'Vitamin C Brightening Kit', 'Skincare'),
+        ('prod-hair-repair', 'Hair Growth & Repair Bundle', 'Haircare'),
+        ('prod-matte-lipstick', 'Matte Lipstick Collection', 'Makeup')
+    ]
+    d = start_date
+    random.seed(11)
+    inserted = 0
+    while d <= end_date:
+        date_str = d.isoformat()
+        for pid, name, category in products:
+            if check_exists(cur, 'product_analytics', 'record_date = ? AND product_name = ?', (date_str, name)):
+                continue
+            recs = random.randint(20, 90)
+            conv = random.uniform(10.0, 30.0)  # %
+            purchases = int(recs * (conv / 100.0))
+            price = random.uniform(200.0, 2000.0)  # INR
+            revenue = purchases * price
+            cur.execute(
+                """
+                INSERT INTO product_analytics(record_date, product_id, product_name, category, views, ai_recommendations, purchases, revenue, conversion_rate)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (date_str, pid, name, category, recs * 3, recs, purchases, round(revenue, 2), round(conv, 2))
+            )
+            inserted += 1
+        d += timedelta(days=1)
+    conn.commit()
+    print(f"  product_analytics: {inserted} inserted")
+
+def seed_realtime_metrics(conn):
+    """Seed minute-level realtime metrics for the last ~2 hours so the realtime page has data.
+
+    The function is schema-aware: if columns (api_success_rate, daily_api_calls, error_rate_pct)
+    exist, it will populate them too.
+    """
+    cur = conn.cursor()
+    now = datetime.utcnow()
+    # Determine available columns
+    cur.execute("PRAGMA table_info(realtime_metrics)")
+    cols = {r[1] for r in cur.fetchall()}
+    inserted = 0
+    for i in range(120, -1, -1):
+        ts = (now - timedelta(minutes=i)).replace(second=0, microsecond=0)
+        tstr = ts.isoformat()
+        if check_exists(cur, "realtime_metrics", "recorded_at = ?", (tstr,)):
+            continue
+        # Generate plausible metrics with gentle waves
+        active = int(70 + 20 * (1 + (i % 30) / 30) + random.uniform(-8, 8))
+        api_ms = int(120 + 30 * (0.5 + (i % 20) / 20) + random.uniform(-8, 8))
+        cpu = round(35 + 20 * (0.5 + (i % 25) / 25) + random.uniform(-3, 3), 2)
+        mem = round(52 + 10 * (0.5 + (i % 40) / 40) + random.uniform(-2, 2), 2)
+        conv = int(3 + 4 * (0.5 + (i % 60) / 60) + random.uniform(-1, 2))
+
+        # Optional derived metrics
+        success = max(95.0, min(99.9, 99.9 - (api_ms/1000.0) * 5.0))
+        daily_calls = int(max(5000, min(50000, conv * 60 * 24 * 0.8)))
+        err_rate = max(0.0, 100.0 - success)
+
+        # Build dynamic insert based on available columns
+        values = {
+            'recorded_at': tstr,
+            'active_sessions': active,
+            'api_response_time_ms': api_ms,
+            'cpu_usage_pct': cpu,
+            'memory_usage_pct': mem,
+            'conversions_per_min': conv,
+            'api_success_rate': round(success, 2),
+            'daily_api_calls': daily_calls,
+            'error_rate_pct': round(err_rate, 2)
+        }
+        ordered = [
+            'recorded_at','active_sessions','api_response_time_ms','cpu_usage_pct','memory_usage_pct','conversions_per_min',
+            'api_success_rate','daily_api_calls','error_rate_pct'
+        ]
+        use_cols = [c for c in ordered if c in cols]
+        placeholders = ','.join(['?']*len(use_cols))
+        sql = f"INSERT INTO realtime_metrics({','.join(use_cols)}) VALUES({placeholders})"
+        cur.execute(sql, tuple(values[c] for c in use_cols))
+        inserted += 1
+    conn.commit()
+    print(f"  realtime_metrics: {inserted} inserted")
+
+def seed_api_endpoints(conn):
+    """Seed api_endpoints table with a few representative services and health stats."""
+    cur = conn.cursor()
+    cur.execute("DELETE FROM api_endpoints")
+    now = datetime.utcnow().isoformat()
+    # Discover actual columns to satisfy NOT NULL constraints
+    cur.execute("PRAGMA table_info(api_endpoints)")
+    pragma = cur.fetchall()
+    table_cols = [r[1] for r in pragma]
+
+    seed_items = [
+        {
+            'endpoint_name': 'Customer API',
+            'base_url': 'https://demo-ecommerce.com/api/customers',
+            'method': 'GET',
+            'avg_response_ms': 120,
+            'success_rate': 99.3,
+            'daily_calls': 14500,
+            'error_rate': 0.7,
+            'last_checked': now,
+            'status': 'active'
+        },
+        {
+            'endpoint_name': 'Product API',
+            'base_url': 'https://demo-ecommerce.com/api/products',
+            'method': 'GET',
+            'avg_response_ms': 110,
+            'success_rate': 99.5,
+            'daily_calls': 12800,
+            'error_rate': 0.5,
+            'last_checked': now,
+            'status': 'active'
+        },
+        {
+            'endpoint_name': 'Order API',
+            'base_url': 'https://demo-ecommerce.com/api/orders',
+            'method': 'GET',
+            'avg_response_ms': 130,
+            'success_rate': 99.1,
+            'daily_calls': 16200,
+            'error_rate': 0.9,
+            'last_checked': now,
+            'status': 'active'
+        },
+        {
+            'endpoint_name': 'Analytics API',
+            'base_url': 'https://demo-ecommerce.com/api/analytics',
+            'method': 'GET',
+            'avg_response_ms': 150,
+            'success_rate': 98.7,
+            'daily_calls': 9200,
+            'error_rate': 1.3,
+            'last_checked': now,
+            'status': 'active'
+        }
+    ]
+    # Choose an insertion column order based on existing schema
+    preferred = ['endpoint_name','base_url','method','avg_response_ms','success_rate','daily_calls','error_rate','last_checked','status']
+    use_cols = [c for c in preferred if c in table_cols]
+    placeholders = ','.join(['?']*len(use_cols))
+    sql = f"INSERT INTO api_endpoints({','.join(use_cols)}) VALUES({placeholders})"
+    values = [tuple(item.get(c, None) for c in use_cols) for item in seed_items]
+    cur.executemany(sql, values)
+    conn.commit()
+    print("  api_endpoints: seeded")
+
+def seed_billing_and_usage(conn):
+    cur = conn.cursor()
+    # Clear existing to avoid duplicates
+    cur.execute("DELETE FROM billing_summary")
+    # Insert one summary row
+    # Build dynamic insert to satisfy existing schemas that may have NOT NULL columns (e.g., billing_period_start)
+    cur.execute("PRAGMA table_info(billing_summary)")
+    pragma_rows = cur.fetchall()
+    bs_cols = [r[1] for r in pragma_rows]
+    values = {
+        'plan_name': 'Professional Plan',
+        'monthly_price': 15000.0,
+        'renewal_date': (datetime.utcnow() + timedelta(days=15)).date().isoformat(),
+        'subscription_amount': 15000.0,
+        'chat_amount': 0.0,
+        'image_amount': 0.0,
+        'questionnaire_amount': 0.0,
+        'overage_amount': 10.95,
+        'total_estimated': 1010.95,
+        # Provide defaults for common extra columns if they exist
+        'billing_period_start': datetime.utcnow().date().replace(day=1).isoformat(),
+        'billing_period_end': (datetime.utcnow().date().replace(day=1) + timedelta(days=32)).replace(day=1).isoformat(),
+        'status': 'Active'
+    }
+    # Satisfy any NOT NULL columns that aren't in our defaults
+    # PRAGMA columns: (cid, name, type, notnull, dflt_value, pk)
+    for cid, name, coltype, notnull, dflt, pk in pragma_rows:
+        if name not in values and notnull:
+            # Provide reasonable defaults based on type/name
+            t = (coltype or '').upper()
+            if 'REAL' in t or 'INT' in t or 'NUM' in t:
+                if name.lower() in ('base_cost', 'subscription_amount'):
+                    values[name] = values.get('monthly_price', 0.0)
+                else:
+                    values[name] = 0.0
+            else:
+                # TEXT defaults
+                if name.lower().endswith('start'):
+                    values[name] = datetime.utcnow().date().replace(day=1).isoformat()
+                elif name.lower().endswith('end'):
+                    values[name] = (datetime.utcnow().date().replace(day=1) + timedelta(days=32)).replace(day=1).isoformat()
+                elif name.lower() == 'status':
+                    values[name] = 'Active'
+                else:
+                    values[name] = ''
+
+    cols_to_use = [c for c in values.keys() if c in bs_cols]
+    placeholders = ','.join(['?']*len(cols_to_use))
+    sql = f"INSERT INTO billing_summary({','.join(cols_to_use)}) VALUES({placeholders})"
+    cur.execute(sql, tuple(values[c] for c in cols_to_use))
+    # Usage breakdown for last 6 months for four types
+    types = [
+        ('chat', 800, '₹0.50 per chat after limit'),
+        ('image', 300, '₹1.00 per image after limit'),
+        ('questionnaire', 1500, '₹0.25 per questionnaire after limit'),
+        ('routine', 120, '₹3.00 per routine after limit')
+    ]
+    today = datetime.utcnow().date().replace(day=1)
+    for m in range(5, -1, -1):
+        month_date = (today - timedelta(days=30*m)).isoformat()
+        for t, limit, rate in types:
+            used = int(limit * (0.55 + 0.15 * (m % 3)))
+            overage_cost = '₹0.00'
+            if t == 'routine' and used > limit:
+                overage_cost = '₹799.00'
+            # Insert with both legacy (month) and alternate schema (record_date)
+            cur.execute("PRAGMA table_info(usage_breakdown)")
+            ub_cols = {r[1] for r in cur.fetchall()}
+            values = {
+                'month': month_date,
+                'record_date': month_date,
+                'usage_type': t,
+                'service_name': t.capitalize(),
+                'used': used,
+                'free_limit': limit,
+                'overage_rate': rate,
+                'overage_cost': overage_cost,
+                'total_usage': used
+            }
+            cols = [c for c in ['month','record_date','usage_type','service_name','used','free_limit','overage_rate','overage_cost','total_usage'] if c in ub_cols]
+            sql = f"INSERT INTO usage_breakdown({','.join(cols)}) VALUES({','.join(['?']*len(cols))})"
+            cur.execute(sql, tuple(values[c] for c in cols))
+    # Payments seed
+    cur.execute("DELETE FROM billing_payments")
+    payments = [
+        ( (today - timedelta(days=0)).isoformat(), 'Professional Plan + Overages', 15799.00, 'Paid', ''),
+        ( (today - timedelta(days=30)).isoformat(), 'Professional Plan + Overages', 15849.00, 'Paid', ''),
+        ( (today - timedelta(days=60)).isoformat(), 'Professional Plan', 15000.00, 'Paid', ''),
+    ]
+    cur.executemany(
+        "INSERT INTO billing_payments(payment_date, description, amount, status, invoice_url) VALUES(?,?,?,?,?)",
+        payments
+    )
+    # Alerts
+    cur.execute("DELETE FROM usage_alerts")
+    alerts = [
+        ('warning', 'Image Analysis nearing limit', 'You\'ve used 92% of your monthly image analysis quota (276/300)', (datetime.utcnow()-timedelta(hours=2)).isoformat()),
+        ('error', 'Routine Plans exceeded limit', 'You\'ve exceeded your monthly routine plan quota. Additional charges: ₹799.00', (datetime.utcnow()-timedelta(days=1)).isoformat()),
+        ('info', 'Monthly billing cycle starts tomorrow', 'Your next billing cycle begins soon.', (datetime.utcnow()-timedelta(days=1)).isoformat())
+    ]
+    cur.executemany("INSERT INTO usage_alerts(level, title, message, created_at) VALUES(?,?,?,?)", alerts)
+    conn.commit()
+    print("  billing_summary/usage_breakdown/payments/alerts: seeded")
 
 def main():
     conn = sqlite3.connect(DB_PATH)
@@ -818,15 +1389,23 @@ def main():
     seed_conversion_funnel(conn, start_1y, today)
     seed_interaction_types(conn, start_1y, today)
     seed_conversion_trends(conn, start_1y, today)  # Daily data for full year
-    seed_customer_segments(conn, today - timedelta(days=14))
+    seed_customer_segments(conn, start_1y, today)
     seed_interaction_summary(conn, start_1y, today)
-    seed_revenue_summary(conn, start_1y, today)  # Monthly summaries
+    # Seed attribution first so monthly summary can derive from it
     seed_revenue_attribution_daily(conn, start_1y, today)  # DAILY attribution for full year
+    seed_revenue_summary(conn, start_1y, today)  # Monthly summaries derived from attribution
+    seed_revenue_forecasting(conn)  # Forecast next 6 months from summary
     seed_ai_performance(conn, start_1y, today)
     seed_customer_satisfaction(conn, start_1y, today)  # Daily satisfaction data for full year
     seed_customer_concerns(conn, start_1y, today)  # Daily concerns data
     seed_customer_lifetime_value(conn, start_1y, today)  # Daily CLV data
     seed_behavioral_patterns(conn, start_1y, today)  # Daily behavioral patterns data
+    seed_product_gaps(conn, start_1y, today)
+    seed_category_perf(conn, start_1y, today)
+    seed_product_analytics(conn, start_1y, today)
+    seed_realtime_metrics(conn)
+    seed_api_endpoints(conn)
+    seed_billing_and_usage(conn)
     
     print("=" * 60)
     print("[OK] Demo data seeded for 7/30/90/365-day ranges with duplicate checking.")

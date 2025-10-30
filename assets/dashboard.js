@@ -1,3 +1,67 @@
+// Mobile sidebar toggle and scroll reveal enhancements
+(function () {
+	const menuToggle = document.querySelector('.menu-toggle');
+	const sidebar = document.querySelector('.sidebar');
+	if (menuToggle && sidebar) {
+		menuToggle.addEventListener('click', function () {
+			sidebar.classList.toggle('active');
+		});
+
+		// Close sidebar when a nav item is clicked on small screens
+		sidebar.addEventListener('click', function (e) {
+			const clickedNavItem = e.target.closest('.nav-item');
+			if (clickedNavItem && window.matchMedia('(max-width: 1024px)').matches) {
+				sidebar.classList.remove('active');
+			}
+		});
+
+		// Click outside to close on small screens
+		document.addEventListener('click', function (e) {
+			if (window.matchMedia('(max-width: 1024px)').matches) {
+				if (!sidebar.contains(e.target) && !menuToggle.contains(e.target)) {
+					sidebar.classList.remove('active');
+				}
+			}
+		});
+	}
+
+	// Scroll reveal (skips when user prefers reduced motion)
+	const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	if (!prefersReduced && 'IntersectionObserver' in window) {
+		const revealSelector = [
+			'.kpi-card',
+			'.chart-card',
+			'.stat-card',
+			'.usage-card',
+			'.status-card',
+			'.insight-card',
+			'.gap-item',
+			'.product-item',
+			'.summary-card',
+			'.activity-item',
+			'.segment-card',
+			'.realtime-card',
+			'.metric-item',
+			'.doc-section',
+			'.example-card',
+			'.support-item'
+		].join(', ');
+
+		const elements = Array.prototype.slice.call(document.querySelectorAll(revealSelector));
+		elements.forEach(function (el) { el.classList.add('reveal'); });
+
+		const io = new IntersectionObserver(function (entries, obs) {
+			entries.forEach(function (entry) {
+				if (entry.isIntersecting) {
+					entry.target.classList.add('in-view');
+					obs.unobserve(entry.target);
+				}
+			});
+		}, { root: null, rootMargin: '0px 0px -10% 0px', threshold: 0.1 });
+
+		elements.forEach(function (el) { io.observe(el); });
+	}
+})();
 // Dashboard JavaScript with Backend API Integration, Date Range Selection, and Chart Rendering
 
 // API Configuration
@@ -173,7 +237,11 @@ function initializeDateRangeSelector() {
         
         // Reload all data with new date range
         console.log(`[DateRange] Loading fresh data for ${currentDateRange}...`);
+        // Realtime charts should be period-agnostic. Reset buffers so we fetch latest snapshot immediately
+        try { window.__rt_lastTs = null; window.__rt_buffer = []; } catch {}
         loadAllData();
+        // Immediately refresh realtime to avoid blank state after period change
+        fetchRealtimeCharts();
     });
 }
 
@@ -421,15 +489,15 @@ function updateBehavioralPatterns(data) {
     const patternMap = {
         'peak_activity': {
             text: data.find(p => p.pattern_type === 'peak_activity')?.pattern_name || 'N/A',
-            value: data.find(p => p.pattern_type === 'peak_activity')?.value || 0
+            value: Math.round(data.find(p => p.pattern_type === 'peak_activity')?.value || 0)
         },
         'preference_match': {
-            text: `${data.find(p => p.pattern_type === 'preference_match')?.value || 0}% accuracy`,
-            value: data.find(p => p.pattern_type === 'preference_match')?.value || 0
+            text: `${Math.round(data.find(p => p.pattern_type === 'preference_match')?.value || 0)}% accuracy`,
+            value: Math.round(data.find(p => p.pattern_type === 'preference_match')?.value || 0)
         },
         'return_rate': {
-            text: `${data.find(p => p.pattern_type === 'return_rate')?.value || 0}% within 30 days`,
-            value: data.find(p => p.pattern_type === 'return_rate')?.value || 0
+            text: `${Math.round(data.find(p => p.pattern_type === 'return_rate')?.value || 0)}% within 30 days`,
+            value: Math.round(data.find(p => p.pattern_type === 'return_rate')?.value || 0)
         }
     };
     
@@ -550,10 +618,18 @@ async function fetchRevenueSummary() {
     showLoadingState('[data-revenue-summary]');
     
     try {
-        const response = await fetchAPI('/api/revenue/summary');
+        const [summary, attribution] = await Promise.all([
+            fetchAPI('/api/revenue/summary'),
+            fetchAPI('/api/revenue/attribution')
+        ]);
         
-        if (response.success && response.data) {
-            updateRevenueSummary(response.data);
+        if (summary.success && summary.data) {
+            // If attribution returns data, reconcile total with sum of features for visual consistency
+            if (attribution && attribution.success && Array.isArray(attribution.data)) {
+                const total = attribution.data.reduce((s, r) => s + Number(r.revenue_amount || 0), 0);
+                summary.data.total_revenue = total;
+            }
+            updateRevenueSummary(summary.data);
             loadingState.hideLoader(container);
         }
     } catch (error) {
@@ -592,7 +668,7 @@ async function fetchAIModelPerformance() {
     showLoadingState('#aiPerformanceChart');
     
     try {
-        const response = await fetchAPI('/api/ai/model-performance');
+        const response = await fetchAPI('/api/ai/model-performance?mode=ring');
         
         if (response.success && response.data) {
             updateAIModelPerformance(response.data);
@@ -646,24 +722,13 @@ async function fetchLiveActiveCount() {
 }
 
 async function fetchBillingSummary() {
-    const container = document.querySelector('[data-billing-summary]');
-    if (!container) return;
-    
-    showLoadingState('[data-billing-summary]');
-    
     try {
         const response = await fetchAPI('/api/billing/summary');
-        
         if (response.success && response.data) {
             updateBillingSummary(response.data);
-            loadingState.hideLoader(container);
         }
     } catch (error) {
         console.error('Failed to fetch billing summary:', error);
-        if (container) {
-            container.innerHTML = '<div class="no-data">Failed to load data</div>';
-            loadingState.hideLoader(container);
-        }
     }
 }
 
@@ -684,6 +749,62 @@ async function fetchConversionTrends() {
         console.error('Failed to fetch conversion trends:', error);
         container.innerHTML = '<div class="no-data">Failed to load chart</div>';
         loadingState.hideLoader(container);
+    }
+}
+
+// Conversion analytics KPIs (Conversions page)
+async function fetchConversionAnalytics() {
+    const page = document.getElementById('conversions');
+    if (!page) return;
+    try {
+        const res = await fetchAPI('/api/conversions/analytics');
+        const data = res && res.success ? res.data : null;
+        const cards = page.querySelectorAll('.kpi-card');
+        if (!cards || cards.length < 4) return;
+        // Overall Conversion Rate
+        const overall = data?.overall_conversion_rate;
+        const overallChange = data?.conversion_rate_change;
+        const overallCard = cards[0];
+        if (overallCard) {
+            const valEl = overallCard.querySelector('.kpi-value');
+            const changeEl = overallCard.querySelector('.kpi-change');
+            if (valEl && overall != null) valEl.textContent = formatPercentage(overall);
+            if (changeEl && overallChange != null) {
+                const isUp = Number(overallChange) >= 0;
+                changeEl.innerHTML = `<i class="fas fa-arrow-${isUp?'up':'down'}"></i> ${isUp?'+':''}${parseFloat(overallChange).toFixed(1)}%`;
+                changeEl.className = `kpi-change ${isUp?'positive':'negative'}`;
+            }
+        }
+        // AI-Driven Conversions
+        const aiPct = data?.ai_driven_percentage;
+        const aiCard = cards[1];
+        if (aiCard) {
+            const valEl = aiCard.querySelector('.kpi-value');
+            if (valEl && aiPct != null) valEl.textContent = formatPercentage(aiPct);
+        }
+        // Cart Recovery Rate
+        const cartRate = data?.cart_recovery_rate;
+        const cartCard = cards[2];
+        if (cartCard) {
+            const valEl = cartCard.querySelector('.kpi-value');
+            if (valEl && cartRate != null) valEl.textContent = formatPercentage(cartRate);
+        }
+        // Avg. Time to Convert (minutes)
+        const timeMin = data?.avg_time_to_convert;
+        const timeChange = data?.avg_time_change;
+        const timeCard = cards[3];
+        if (timeCard) {
+            const valEl = timeCard.querySelector('.kpi-value');
+            const changeEl = timeCard.querySelector('.kpi-change');
+            if (valEl && timeMin != null) valEl.textContent = `${parseFloat(timeMin).toFixed(1)} min`;
+            if (changeEl && timeChange != null) {
+                const isDown = Number(timeChange) <= 0; // lower is better
+                changeEl.innerHTML = `<i class="fas fa-arrow-${isDown?'down':'up'}"></i> ${isDown?'':'+'}${Math.abs(parseFloat(timeChange)).toFixed(1)}%`;
+                changeEl.className = `kpi-change ${isDown?'positive':'negative'}`;
+            }
+        }
+    } catch (e) {
+        console.warn('conversion-analytics failed', e);
     }
 }
 
@@ -740,8 +861,30 @@ async function fetchInteractionStats() {
     try {
         const response = await fetchAPI('/api/interactions/summary');
         
-        if (response.success && response.data) {
+        if (response.success && (response.data || response.timeline)) {
+            // Prefer computing stats from the same timeline used by the chart to
+            // guarantee visual and numeric correlation.
+            if (Array.isArray(response.timeline) && response.timeline.length > 0) {
+                const totals = response.timeline.reduce((acc, cur) => {
+                    acc.questionnaire += Number(cur.questionnaire_interactions || 0);
+                    acc.chat += Number(cur.chat_interactions || 0);
+                    acc.image += Number(cur.image_analysis_interactions || 0);
+                    acc.routine += Number(cur.routine_planner_interactions || 0);
+                    return acc;
+                }, { questionnaire: 0, chat: 0, image: 0, routine: 0 });
+                const total_interactions = totals.questionnaire + totals.chat + totals.image + totals.routine;
+                const avg_response_time = response.data?.avg_response_time || 0;
+                updateInteractionStats({
+                    total_interactions,
+                    questionnaire_interactions: totals.questionnaire,
+                    chat_interactions: totals.chat,
+                    image_analysis_interactions: totals.image,
+                    routine_planner_interactions: totals.routine,
+                    avg_response_time
+                });
+            } else if (response.data) {
             updateInteractionStats(response.data);
+            }
             loadingState.hideLoader(container);
         }
     } catch (error) {
@@ -987,7 +1130,7 @@ function updateInteractionTypesChart(data) {
     const series = uniqueData.map(d => d.count);
     const labels = uniqueData.map(d => d.name);
     const total = series.reduce((a, b) => a + b, 0);
-    
+
     const options = {
         series: series,
         chart: {
@@ -1337,7 +1480,7 @@ function updateCLVChart(data) {
         dataLabels: {
             enabled: true,
             formatter: function(val) {
-                return '€' + val.toFixed(0) + 'K';
+                return '₹' + val.toFixed(0) + 'K';
             },
             offsetY: -20,
             style: {
@@ -1364,7 +1507,7 @@ function updateCLVChart(data) {
             },
             labels: {
                 formatter: function(val) {
-                    return '€' + val.toFixed(0) + 'K';
+                    return '₹' + val.toFixed(0) + 'K';
                 }
             }
         },
@@ -1374,7 +1517,7 @@ function updateCLVChart(data) {
         tooltip: {
             y: {
                 formatter: function(val) {
-                    return '€' + val.toFixed(0) + ',000';
+                    return '₹' + val.toFixed(0) + ',000';
                 }
             }
         },
@@ -1445,6 +1588,87 @@ function updateProductAnalytics(data) {
     console.log('Product analytics data:', data);
 }
 
+// Top recommended products
+async function fetchTopRecommendedProducts() {
+    const list = document.getElementById('topProducts');
+    if (!list) return;
+    try {
+        const res = await fetchAPI('/api/products/recommended');
+        if (res.success && res.data) {
+            updateTopProducts(res.data);
+        }
+    } catch (e) {
+        console.error('Failed to fetch top recommended products', e);
+    }
+}
+
+function updateTopProducts(items) {
+    const list = document.getElementById('topProducts');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!items || items.length === 0) {
+        list.innerHTML = '<div class="no-data">No products</div>';
+        return;
+    }
+    items.slice(0,5).forEach((item, idx) => {
+        const html = `
+            <div class="product-item">
+                <span class="rank">${idx + 1}</span>
+                <div class="product-info">
+                    <strong>${item.product_name}</strong>
+                    <span>${formatNumber(item.recommendations)} recommendations</span>
+                </div>
+                <div class="product-metrics">
+                    <span class="conversion-rate">${Math.round(item.conversion_rate)}% conv.</span>
+                    <span class="revenue">${formatCurrency(item.revenue)}</span>
+                </div>
+            </div>`;
+        list.insertAdjacentHTML('beforeend', html);
+    });
+}
+
+// Product gaps
+async function fetchProductGaps() {
+    const container = document.querySelector('.product-gaps');
+    if (!container) return;
+    try {
+        const response = await fetchAPI('/api/customers/product-gaps');
+        if (response.success && response.data) {
+            updateProductGaps(response.data);
+        }
+    } catch (e) {
+        console.error('Failed to fetch product gaps:', e);
+    }
+}
+
+function updateProductGaps(data) {
+    const container = document.querySelector('.product-gaps');
+    if (!container) return;
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="no-data">No product gaps found</div>';
+        return;
+    }
+    container.innerHTML = '';
+    data.slice(0, 10).forEach((item, idx) => {
+        const rank = item.gap_rank || idx + 1;
+        const requests = item.demand_score || 0;
+        const potential = item.potential_revenue || 0;
+        const html = `
+            <div class="gap-item">
+                <div class="gap-rank">${rank}</div>
+                <div class="gap-content">
+                    <div class="gap-product">${item.product_name || 'Product'}</div>
+                    <div class="gap-stats">
+                        <span class="requests"><i class="fas fa-users"></i> ${formatNumber(requests)} requests</span>
+                        <span class="revenue">${formatCurrency(potential)}</span>
+                    </div>
+                </div>
+                <div class="gap-action">Add Product</div>
+            </div>`;
+        container.insertAdjacentHTML('beforeend', html);
+    });
+}
+
 function updateRevenueSummary(data) {
     const container = document.querySelector('[data-revenue-summary]');
     if (!container || !data) {
@@ -1452,31 +1676,48 @@ function updateRevenueSummary(data) {
         return;
     }
     
+    // Map backend keys to UI expectations, with graceful fallbacks
+    const totalRevenue = data.total_revenue || data.total_revenue_impact || 0;
+    const avgOrderValue = data.average_order_value || data.avg_order_value || 0;
+    const orderValueImprovement = (data.order_value_change !== undefined ? data.order_value_change : (data.avg_order_value_improvement !== undefined ? data.avg_order_value_improvement : 0));
+    // Period-aware ROI calculation to avoid unrealistic values
+    const baseMonthlyInvestment = 25000; // €25k baseline per month
+    const months = (function(){
+        if (currentDateRange === '7d') return 7/30;
+        if (currentDateRange === '30d') return 1;
+        if (currentDateRange === '90d') return 3;
+        if (currentDateRange === '1y') return 12;
+        return 1;
+    })();
+    const monthlyInvestment = data.monthly_investment || (baseMonthlyInvestment * months);
+    const monthlyReturn = data.monthly_return || totalRevenue; // treat total in period as return over the period
+    const roiDecimal = (monthlyInvestment > 0) ? ((monthlyReturn - monthlyInvestment) / monthlyInvestment) : 0;
+    
     const html = `
         <div class="summary-card">
             <h3>Total Revenue Impact</h3>
-            <div class="revenue-value">${formatCurrency(data.total_revenue || 0)}</div>
+            <div class="revenue-value">${formatCurrency(totalRevenue)}</div>
             <p>Directly attributed to AI recommendations</p>
         </div>
         <div class="summary-card">
             <h3>Average Order Value</h3>
-            <div class="revenue-value">${formatCurrency(data.average_order_value || 0)}</div>
-            <p class="increase">${data.order_value_change || 0 > 0 ? '+' : ''}${(data.order_value_change || 0).toFixed(1)}% with AI assistance</p>
+            <div class="revenue-value">${formatCurrency(avgOrderValue)}</div>
+            <p class="increase">${orderValueImprovement > 0 ? '+' : ''}${(orderValueImprovement).toFixed(1)}% with AI assistance</p>
         </div>
         <div class="summary-card">
             <h3>ROI Calculator</h3>
             <div class="roi-calc">
                 <div class="roi-item">
                     <span>Investment:</span>
-                    <span>${formatCurrency(data.monthly_investment || 0)}/mo</span>
+                    <span>${formatCurrency(monthlyInvestment)}/mo</span>
                 </div>
                 <div class="roi-item">
                     <span>Return:</span>
-                    <span>${formatCurrency(data.monthly_return || 0)}/mo</span>
+                    <span>${formatCurrency(monthlyReturn)}/mo</span>
                 </div>
                 <div class="roi-result">
                     <span>ROI:</span>
-                    <span class="roi-value">${((data.roi || 0) * 100).toFixed(0)}%</span>
+                    <span class="roi-value">${(roiDecimal * 100).toFixed(0)}%</span>
                 </div>
             </div>
         </div>
@@ -1766,9 +2007,9 @@ function updateAIModelPerformance(data) {
     
     // Use the latest entry (first in array if sorted by date DESC)
     const latest = Array.isArray(data) ? (data[0] || {}) : data;
-    const accuracy = parseFloat(latest.accuracy || latest.accuracy_percentage || 94);
-    const satisfaction = parseFloat(latest.user_satisfaction || latest.satisfaction_score || latest.f1_score || 89);
-    const conversion = parseFloat(latest.conversion_rate || latest.precision || 76);
+    const accuracy = parseFloat(latest.accuracy || latest.accuracy_percentage );
+    const satisfaction = parseFloat(latest.user_satisfaction || latest.satisfaction_score || latest.f1_score );
+    const conversion = parseFloat(latest.conversion_rate || latest.precision );
     
     const options = {
         series: [accuracy, satisfaction, conversion],
@@ -1801,11 +2042,16 @@ function updateAIModelPerformance(data) {
                 },
                 hollow: {
                     margin: 0,
-                    size: '66%'
+                    size: '62%'
                 },
                 dataLabels: {
                     show: true,
-                    name: { show: false },
+                    name: { 
+                        show: true,
+                        fontSize: '13px',
+                        offsetY: -8,
+                        formatter: function(){ return 'Recommendation Accuracy'; }
+                    },
                     value: {
                         show: true,
                         fontSize: '18px',
@@ -1906,15 +2152,222 @@ function updateSystemHealth(data) {
     container.innerHTML = html;
 }
 
-function updateBillingSummary(data) {
-    const container = document.querySelector('[data-billing-summary]');
-    if (!container || !data) {
-        if (container) container.innerHTML = '<div class="no-data">No billing data available</div>';
-        return;
+// ========================= Real-time Monitoring =========================
+function refreshApiHealthWidget() {
+    const widget = document.querySelector('#api-config #apiHealthMetrics');
+    if (!widget) return;
+    fetchAPI('/api/realtime/api-endpoints')
+        .then(res => {
+            if (!(res.success && Array.isArray(res.data) && res.data.length)) return;
+            const rows = res.data;
+            // Aggregate across endpoints
+            const avgRt = rows.reduce((s, r) => s + (Number(r.avg_response_ms||0)), 0) / rows.length;
+            const avgSuccess = rows.reduce((s, r) => s + (Number(r.success_rate||0)), 0) / rows.length;
+            const sumCalls = rows.reduce((s, r) => s + (Number(r.daily_calls||0)), 0);
+            const avgErr = rows.reduce((s, r) => s + (Number(r.error_rate||0)), 0) / rows.length;
+
+            const setText = (sel, val) => {
+                const el = widget.querySelector(`[data-health="${sel}"]`);
+                if (!el) return;
+                if (sel === 'response_time') el.textContent = `${parseInt(val,10)}ms`;
+                else if (sel === 'daily_calls') el.textContent = formatNumber(Math.round(val));
+                else el.textContent = `${Number(val).toFixed(1)}%`;
+            };
+            setText('response_time', avgRt);
+            setText('success_rate', avgSuccess);
+            setText('daily_calls', sumCalls);
+            setText('error_rate', avgErr);
+        })
+        .catch(() => {});
+}
+async function fetchRealtimeCharts() {
+    const activeEl = document.getElementById('activeSessionsChart');
+    const convEl = document.getElementById('liveConversionChart');
+    if (!activeEl && !convEl) return; // page not visible
+    try {
+        const since = window.__rt_lastTs ? `?since=${encodeURIComponent(window.__rt_lastTs)}` : '';
+        const sys = await fetchAPI(`/api/realtime/system-health${since}`);
+        if (sys.success && Array.isArray(sys.data) && sys.data.length) {
+            // Maintain rolling window
+            if (!window.__rt_buffer) window.__rt_buffer = [];
+            window.__rt_buffer = window.__rt_buffer.concat(sys.data);
+            // Keep last 60 points
+            if (window.__rt_buffer.length > 60) {
+                window.__rt_buffer = window.__rt_buffer.slice(window.__rt_buffer.length - 60);
+            }
+            // Track last timestamp
+            const last = window.__rt_buffer[window.__rt_buffer.length - 1];
+            window.__rt_lastTs = last?.recorded_at;
+            renderActiveSessionsChart(window.__rt_buffer);
+            // Live conversions: show last 30 minutes as a line chart
+            const recent = window.__rt_buffer.slice(-30);
+            const convLabels = recent.map(r => {
+                const t = r.recorded_at || r.date || r.timestamp;
+                try { return new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch { return String(t || ''); }
+            });
+            const convValues = recent.map(r => Number(r.conversions_per_min || r.conversions_last_minute || 0));
+            renderLiveConversionLine(convLabels, convValues);
+            // Update system health panel from latest row
+            const latestRow = last || {};
+            const apiMs = parseInt(latestRow.api_response_time_ms || latestRow.api_response_time || latestRow.api_response_rate || 95);
+            const cpuPct = parseFloat(latestRow.cpu_usage_pct || latestRow.cpu_usage || 42);
+            const memPct = parseFloat(latestRow.memory_usage_pct || latestRow.memory_usage || 58);
+            const health = document.querySelector('#realtime .health-metrics');
+            if (health) {
+                const spans = health.querySelectorAll('.metric');
+                // API
+                const apiMetric = spans[0];
+                if (apiMetric) {
+                    const bar = apiMetric.querySelector('.bar-fill');
+                    const val = apiMetric.querySelector('span:last-child');
+                    if (bar) bar.style.width = `${Math.min(100, Math.max(0, (200 - apiMs) / 2))}%`;
+                    if (val) val.textContent = `${apiMs}ms`;
+                }
+                // CPU
+                const cpuMetric = spans[1];
+                if (cpuMetric) {
+                    const bar = cpuMetric.querySelector('.bar-fill');
+                    const val = cpuMetric.querySelector('span:last-child');
+                    if (bar) bar.style.width = `${cpuPct}%`;
+                    if (val) val.textContent = `${cpuPct}%`;
+                }
+                // Memory
+                const memMetric = spans[2];
+                if (memMetric) {
+                    const bar = memMetric.querySelector('.bar-fill');
+                    const val = memMetric.querySelector('span:last-child');
+                    if (bar) bar.style.width = `${memPct}%`;
+                    if (val) val.textContent = `${memPct}%`;
+                }
+            }
+        }
+        // If no new data, keep existing charts unchanged
+    } catch (e) {
+        console.warn('Realtime charts failed', e);
     }
-    
-    // Implementation for billing summary
-    console.log('Billing summary data:', data);
+}
+
+function renderActiveSessionsChart(rows) {
+    const el = document.getElementById('activeSessionsChart');
+    if (!el || !rows || !rows.length) return;
+    // Normalize payload fields
+    const labels = rows.map(r => {
+        const t = r.recorded_at || r.updated_at || r.record_date || r.date || r.timestamp;
+        try { return new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); } catch { return String(t || ''); }
+    });
+    const values = rows.map(r => {
+        const v = r.active_sessions ?? r.current_sessions ?? r.active ?? r.sessions ?? 0;
+        return typeof v === 'string' ? parseFloat(v) : Number(v);
+    });
+    // Guard against NaNs
+    const cleanValues = values.map(v => (isFinite(v) ? v : 0));
+    const maxY = Math.max(10, Math.max.apply(null, cleanValues) * 1.2);
+    // Update live count headline
+    const liveCountEl = document.querySelector('#realtime .live-count');
+    if (liveCountEl) {
+        const last = cleanValues.length ? cleanValues[cleanValues.length - 1] : 0;
+        liveCountEl.textContent = last ? formatNumber(last) : '';
+    }
+    // Destroy any previous chart instance
+    if (chartInstances['activeSessions']) {
+        try { chartInstances['activeSessions'].destroy(); } catch {}
+        delete chartInstances['activeSessions'];
+    }
+    const options = {
+        series: [{ name: 'Active Sessions', data: cleanValues }],
+        chart: { type: 'line', height: 220, toolbar: { show: false } },
+        stroke: { curve: 'smooth', width: 3 },
+        xaxis: { categories: labels, labels: { show: true } },
+        yaxis: { min: 0, max: maxY, labels: { formatter: v => formatNumber(Math.round(v)) } },
+        colors: ['#5b8ff5'],
+        grid: { strokeDashArray: 4 },
+        markers: { size: 0 }
+    };
+    chartInstances['activeSessions'] = new ApexCharts(el, options);
+    chartInstances['activeSessions'].render();
+}
+
+function renderLiveConversionChart(labels, bars) {
+    const el = document.getElementById('liveConversionChart');
+    if (!el) return;
+    if (chartInstances['liveConv']) {
+        try { chartInstances['liveConv'].destroy(); } catch {}
+        delete chartInstances['liveConv'];
+    }
+    const maxY = Math.max(10, Math.max.apply(null, bars) * 1.4);
+    const options = {
+        series: [{ name: 'Conversions/min', data: bars }],
+        chart: { type: 'bar', height: 260, toolbar: { show: false } },
+        plotOptions: { bar: { columnWidth: bars.length === 1 ? '30%' : '80%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        xaxis: { categories: labels, labels: { show: true } },
+        yaxis: { min: 0, max: maxY, labels: { formatter: v => formatNumber(Math.round(v)) } },
+        colors: ['#52c41a'],
+        grid: { strokeDashArray: 4 }
+    };
+    chartInstances['liveConv'] = new ApexCharts(el, options);
+    chartInstances['liveConv'].render();
+}
+
+function renderLiveConversionLine(labels, values) {
+    const el = document.getElementById('liveConversionChart');
+    if (!el) return;
+    if (chartInstances['liveConv']) {
+        try { chartInstances['liveConv'].destroy(); } catch {}
+        delete chartInstances['liveConv'];
+    }
+    const maxY = Math.max(10, Math.max.apply(null, values) * 1.2);
+    const options = {
+        series: [{ name: 'Conversions/min', data: values }],
+        chart: { type: 'line', height: 260, toolbar: { show: false } },
+        stroke: { curve: 'smooth', width: 3 },
+        dataLabels: { enabled: false },
+        xaxis: { categories: labels },
+        yaxis: { min: 0, max: maxY, labels: { formatter: v => formatNumber(Math.round(v)) } },
+        colors: ['#52c41a'],
+        grid: { strokeDashArray: 4 }
+    };
+    chartInstances['liveConv'] = new ApexCharts(el, options);
+    chartInstances['liveConv'].render();
+}
+function updateBillingSummary(data) {
+    // Fill subscription plan header if present
+    try {
+        const nameEl = document.querySelector('#billing [data-plan-name]');
+        const priceEl = document.querySelector('#billing [data-plan-price]');
+        const statusEl = document.querySelector('#billing [data-plan-status]');
+        const renewalEl = document.querySelector('#billing [data-plan-renewal]');
+        if (nameEl) nameEl.textContent = data.plan_name || data.plan || '';
+        if (priceEl) priceEl.innerHTML = data.monthly_price ? `${formatCurrency(data.monthly_price)}<span>/month</span>` : '';
+        if (statusEl) {
+            statusEl.textContent = (data.status || 'Active');
+            statusEl.classList.add(String((data.status||'active')).toLowerCase());
+        }
+        if (renewalEl) renewalEl.textContent = data.renewal_date ? `Renews on ${data.renewal_date}` : '';
+        // Bill breakdown list
+        const breakdown = document.querySelector('#billing [data-bill-breakdown]');
+        if (breakdown) {
+            breakdown.innerHTML = '';
+            const items = Array.isArray(data.items) ? data.items : [
+                { label: `Subscription (${data.plan_name || 'Plan'})`, amount: data.monthly_price || data.subscription_amount || 0 },
+                { label: 'Chat Sessions (within limit)', amount: data.chat_amount || 0 },
+                { label: 'Image Analysis (within limit)', amount: data.image_amount || 0 },
+                { label: 'Questionnaires (within limit)', amount: data.questionnaire_amount || 0 },
+                { label: 'Overage', amount: data.overage_amount || 0, overage: true }
+            ];
+            items.forEach(it => {
+                const row = document.createElement('div');
+                row.className = `bill-item${it.overage ? ' overage' : ''}`;
+                row.innerHTML = `<span class="bill-label">${it.label}</span><span class="bill-amount">${formatCurrency(it.amount||0)}</span>`;
+                breakdown.appendChild(row);
+            });
+            const total = document.createElement('div');
+            total.className = 'bill-total';
+            const totalAmount = data.total_estimated || items.reduce((s, i) => s + (Number(i.amount)||0), 0);
+            total.innerHTML = `<span class="bill-label">Total Estimated</span><span class="bill-amount">${formatCurrency(totalAmount)}</span>`;
+            breakdown.appendChild(total);
+        }
+    } catch (e) { console.warn('updateBillingSummary failed', e); }
 }
 
 function updateConversionTrendChart(data) {
@@ -2095,54 +2548,73 @@ function updateSatisfactionChart(data) {
         return;
     }
     
-    // Group data by month if we have date-based data
-    const monthMap = {};
-    const monthOrder = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    
+    // Group by day/week/month depending on selected range
+    const bucketMap = {};
+    function toBucketKey(dateStr) {
+        const d = new Date(dateStr);
+        if (currentDateRange === '7d') {
+            return d.toISOString().slice(0, 10); // YYYY-MM-DD
+        }
+        if (currentDateRange === '90d' || currentDateRange === '30d') {
+            // Week bucket (Monday as start)
+            const day = d.getUTCDay() || 7;
+            const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day + 1));
+            return monday.toISOString().slice(0, 10);
+        }
+        // Month bucket
+        return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-01`;
+    }
     if (Array.isArray(data)) {
         data.forEach(item => {
-            const date = item.record_date || item.date;
-            if (date) {
-                const d = new Date(date);
-                const monthKey = monthOrder[d.getMonth()];
-                if (!monthMap[monthKey]) {
-                    monthMap[monthKey] = {
-                        overall: 0,
-                        product: 0,
-                        ai: 0,
-                        count: 0
-                    };
-                }
-                monthMap[monthKey].overall += parseFloat(item.overall_satisfaction || item.rating || 0);
-                monthMap[monthKey].product += parseFloat(item.product_match_quality || 0);
-                monthMap[monthKey].ai += parseFloat(item.ai_helpfulness || 0);
-                monthMap[monthKey].count += 1;
-            }
+            const ds = item.record_date || item.date;
+            if (!ds) return;
+            const key = toBucketKey(ds);
+            if (!bucketMap[key]) bucketMap[key] = { overall: 0, product: 0, ai: 0, count: 0 };
+            bucketMap[key].overall += parseFloat(item.overall_satisfaction || item.rating || 0);
+            bucketMap[key].product += parseFloat(item.product_match_quality || 0);
+            bucketMap[key].ai += parseFloat(item.ai_helpfulness || 0);
+            bucketMap[key].count += 1;
         });
     }
-    
-    // Use available months or default range
-    const availableMonths = Object.keys(monthMap).length > 0 ? Object.keys(monthMap).slice(-7) : ['Apr', 'May', 'Jun', 'Jul'];
-    const months = availableMonths.length > 0 ? availableMonths : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'];
-    
-    const overallSatisfaction = months.map(m => {
-        if (monthMap[m] && monthMap[m].count > 0) {
-            return monthMap[m].overall / monthMap[m].count;
+    // Build ordered labels
+    let labels = Object.keys(bucketMap).sort();
+    if (currentDateRange === '7d') {
+        // ensure last 7 days present in order
+        const today = new Date();
+        labels = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(today.getDate() - i);
+            labels.push(d.toISOString().slice(0,10));
         }
-        return 4.0; // Default value
+    }
+    // Human-readable x-axis labels
+    const xLabels = labels.map(k => {
+        const d = new Date(k);
+        if (currentDateRange === '7d') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        if (currentDateRange === '30d' || currentDateRange === '90d') return 'Week ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        return d.toLocaleDateString('en-US', { month: 'short' });
     });
-    const productMatch = months.map(m => {
-        if (monthMap[m] && monthMap[m].count > 0) {
-            return monthMap[m].product / monthMap[m].count;
+    // Series values (use defaults if empty bucket)
+    const fallback = { overall: 4.0, product: 4.2, ai: 4.1 };
+    const overallSatisfaction = labels.map(k => bucketMap[k]?.count ? bucketMap[k].overall / bucketMap[k].count : fallback.overall);
+    const productMatch = labels.map(k => bucketMap[k]?.count ? bucketMap[k].product / bucketMap[k].count : fallback.product);
+    const aiHelpfulness = labels.map(k => bucketMap[k]?.count ? bucketMap[k].ai / bucketMap[k].count : fallback.ai);
+
+    // If something still collapses to a single point, pad to 7 daily points for 7d
+    if (currentDateRange === '7d' && xLabels.length <= 1) {
+        const today = new Date();
+        const labels7 = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(today.getDate() - i);
+            labels7.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
         }
-        return 4.2; // Default value
-    });
-    const aiHelpfulness = months.map(m => {
-        if (monthMap[m] && monthMap[m].count > 0) {
-            return monthMap[m].ai / monthMap[m].count;
-        }
-        return 4.1; // Default value
-    });
+        while (overallSatisfaction.length < 7) overallSatisfaction.push(fallback.overall);
+        while (productMatch.length < 7) productMatch.push(fallback.product);
+        while (aiHelpfulness.length < 7) aiHelpfulness.push(fallback.ai);
+        while (xLabels.length < 7) xLabels.push(labels7[xLabels.length] || labels7[labels7.length-1]);
+    }
     
     const options = {
         series: [
@@ -2173,7 +2645,7 @@ function updateSatisfactionChart(data) {
             width: 3
         },
         xaxis: {
-            categories: months,
+            categories: xLabels,
             title: {
                 text: 'Month'
             }
@@ -2271,6 +2743,30 @@ function updateInteractionTimelineChart(data) {
             image.push(item.image_analysis_interactions || 0);
             routine.push(item.routine_planner_interactions || 0);
         });
+
+        // If last 7 days has fewer than 7 points (e.g., weekly rows), approximate daily points
+        if (currentDateRange === '7d' && dateLabels.length < 7) {
+            const needed = 7;
+            const lastIdx = timelineData.length - 1;
+            const q = (timelineData[lastIdx]?.questionnaire_interactions || 0) / needed;
+            const c = (timelineData[lastIdx]?.chat_interactions || 0) / needed;
+            const i = (timelineData[lastIdx]?.image_analysis_interactions || 0) / needed;
+            const r = (timelineData[lastIdx]?.routine_planner_interactions || 0) / needed;
+            dateLabels = [];
+            questionnaire = [];
+            chat = [];
+            image = [];
+            routine = [];
+            for (let d = needed - 1; d >= 0; d--) {
+                const dt = new Date();
+                dt.setDate(dt.getDate() - d);
+                dateLabels.push(dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+                questionnaire.push(Math.round(q));
+                chat.push(Math.round(c));
+                image.push(Math.round(i));
+                routine.push(Math.round(r));
+            }
+        }
     } else {
         // Fallback: distribute summary data across days if available
         const numPoints = currentDateRange === '7d' ? 7 : (currentDateRange === '30d' ? 30 : (currentDateRange === '90d' ? 13 : 12));
@@ -2299,13 +2795,21 @@ function updateInteractionTimelineChart(data) {
         }
     }
     
-    // Ensure we have some data
-    if (dateLabels.length === 0) {
+    // Ensure arrays are aligned and non-empty
+    const lengths = [dateLabels.length, questionnaire.length, chat.length, image.length, routine.length];
+    const minLen = Math.min.apply(null, lengths);
+    if (!minLen || minLen <= 0) {
         dateLabels = ['No data'];
         questionnaire = [0];
         chat = [0];
         image = [0];
         routine = [0];
+    } else if (!(lengths.every(l => l === minLen))) {
+        dateLabels = dateLabels.slice(0, minLen);
+        questionnaire = questionnaire.slice(0, minLen).map(v => Number(v)||0);
+        chat = chat.slice(0, minLen).map(v => Number(v)||0);
+        image = image.slice(0, minLen).map(v => Number(v)||0);
+        routine = routine.slice(0, minLen).map(v => Number(v)||0);
     }
     
     const options = {
@@ -2354,19 +2858,49 @@ function updateInteractionTimelineChart(data) {
                 }
             }
         },
-        yaxis: {
-            min: 0,
-            labels: {
-                formatter: function(val) {
-                    // Format numbers without decimals for interaction counts
-                    if (val >= 1000) {
-                        return (val / 1000).toFixed(0) + 'K';
+        yaxis: (function(){
+            // Compute stacked totals to determine a sensible Y-axis range
+            const totalsPerPoint = dateLabels.map((_, idx) =>
+                (Number(questionnaire[idx]) || 0) +
+                (Number(chat[idx]) || 0) +
+                (Number(image[idx]) || 0) +
+                (Number(routine[idx]) || 0)
+            );
+            const rawMax = totalsPerPoint.length ? Math.max.apply(null, totalsPerPoint) : 0;
+            // Add ~10% headroom so peaks don't touch the top
+            const paddedMax = rawMax * 1.1;
+            // Choose a nice step from the set [1k, 2k, 5k, 10k, ...] so ticks are intuitive
+            const steps = [1, 2, 5];
+            const thousand = 1000;
+            let magnitude = thousand; // start from 1k
+            let step = thousand;      // default 1k
+            const targetTicks = 6;
+            while (true) {
+                for (let s of steps) {
+                    const candidate = s * magnitude;
+                    const ticks = Math.ceil(paddedMax / candidate) + 1; // include 0
+                    if (ticks <= targetTicks) {
+                        step = candidate;
+                        break;
                     }
-                    return val.toFixed(0);
                 }
-            },
-            tickAmount: 6
-        },
+                if (step !== thousand || Math.ceil(paddedMax / step) + 1 <= targetTicks) break;
+                magnitude *= 10; // escalate to next order of magnitude
+            }
+            const tickCount = Math.max(2, Math.min(targetTicks, Math.ceil(paddedMax / step) + 1));
+            const alignedMax = step * (tickCount - 1);
+            return {
+                min: 0,
+                max: alignedMax || 0,
+                tickAmount: tickCount,
+                labels: {
+                    formatter: function(val) {
+                        if (val >= 1000) return (val / 1000).toFixed(0) + 'K';
+                        return Number(val).toFixed(0);
+                    }
+                }
+            };
+        })(),
         colors: ['#407CEE', '#5b8ff5', '#7ba3f7', '#94b0fa'],
         fill: {
             type: 'gradient',
@@ -2379,16 +2913,28 @@ function updateInteractionTimelineChart(data) {
             position: 'bottom'
         },
         tooltip: {
+            shared: true,
             y: {
-                formatter: function(val) {
-                    return formatNumber(val);
+                formatter: function(val) { return formatNumber(val); }
+            },
+            x: {
+                formatter: function(val, opts){
+                    // Append total at this x to help sanity check against the Y scale
+                    const idx = opts.dataPointIndex || 0;
+                    const total = ((Number(questionnaire[idx])||0) + (Number(chat[idx])||0) + (Number(image[idx])||0) + (Number(routine[idx])||0));
+                    return `${val}  •  Total: ${formatNumber(total)}`;
                 }
             }
         }
     };
     
-    chartInstances['interactionTimeline'] = new ApexCharts(container, options);
-    chartInstances['interactionTimeline'].render();
+    try {
+        chartInstances['interactionTimeline'] = new ApexCharts(container, options);
+        chartInstances['interactionTimeline'].render();
+    } catch (err) {
+        console.error('Apex render error', err, options);
+        container.innerHTML = '<div class="no-data">Failed to load chart</div>';
+    }
 }
 
 function updateInteractionStats(data) {
@@ -2490,16 +3036,19 @@ function formatPercentage(num) {
 }
 
 function formatCurrency(num) {
-    if (num === null || num === undefined) return '€0';
+    if (num === null || num === undefined) return '₹0';
     const value = parseFloat(num);
-    if (value >= 1000000) {
-        return `€${(value / 1000000).toFixed(1)}M`;
+    // Indian style suffixes
+    if (value >= 10000000) { // 1 crore
+        return `₹${(value / 10000000).toFixed(1)} Cr`;
+    } else if (value >= 100000) { // 1 lakh
+        return `₹${(value / 100000).toFixed(1)} L`;
     } else if (value >= 1000) {
-        return `€${(value / 1000).toFixed(1)}K`;
+        return `₹${(value / 1000).toFixed(1)}K`;
     }
-    return new Intl.NumberFormat('en-US', {
+    return new Intl.NumberFormat('en-IN', {
         style: 'currency',
-        currency: 'EUR',
+        currency: 'INR',
         minimumFractionDigits: 0
     }).format(value);
 }
@@ -2535,6 +3084,14 @@ async function initializeDataFetching() {
         console.log('Backend server is available. Fetching data...');
         loadAllData();
     }
+    // Start realtime polling to keep the active sessions graph alive
+    try {
+        if (!window.__rt_poll) {
+            window.__rt_poll = setInterval(() => {
+                fetchRealtimeCharts();
+            }, 5000); // every 5s
+        }
+    } catch {}
 }
 
 // Load all dashboard data
@@ -2551,14 +3108,291 @@ function loadAllData() {
     fetchProductAnalytics();
     fetchRevenueSummary();
     fetchRevenueAttribution();
+    // Revenue Impact extras so all periods refresh
+    updateRevenueGrowthChartFromAttribution();
+    fetchCategoryPerformance();
+    fetchRevenueForecasting();
+    renderRevenueByFeatureList();
     fetchAIModelPerformance();
     fetchSystemHealth();
+    fetchRealtimeCharts();
+    refreshApiHealthWidget();
     fetchBillingSummary();
+    fetchUsageBreakdown();
+    fetchPaymentHistory();
+    fetchUsageAlerts();
     fetchConversionTrends();
+    fetchConversionAnalytics();
     fetchSatisfactionTrends();
     fetchInteractionTimeline();
     fetchInteractionStats();
+    // Ensure customer value tab charts are ready even before switching to the tab
+    fetchCustomerLifetimeValueForDistribution();
     fetchLiveActiveCount();
+    fetchProductGaps();
+    fetchCrossSellUpsell();
+    fetchTopRecommendedProducts();
+    fetchAIModelPerformanceTrend();
+    fetchAISummary();
+}
+
+// ========================= Billing & Usage =========================
+async function fetchUsageBreakdown() {
+    try {
+        const res = await fetchAPI('/api/billing/usage-breakdown');
+        if (!(res.success && Array.isArray(res.data))) return;
+        // Populate usage cards
+        const cards = document.querySelectorAll('#billing [data-usage-card]');
+        const byType = {};
+        res.data.forEach(r => { byType[(r.usage_type||r.type||'').toLowerCase()] = r; });
+        cards.forEach(card => {
+            const key = card.getAttribute('data-usage-card');
+            const row = byType[key] || {};
+            const limit = Number(row.free_limit || row.limit || 0);
+            const used = Number(row.used || row.usage || 0);
+            const rate = row.overage_rate_text || row.overage_rate || '';
+            const cost = row.overage_cost_text || row.overage_cost || '';
+            const pct = limit > 0 ? Math.min(100, Math.round((used/limit)*100)) : 0;
+            const limitEl = card.querySelector('[data-usage-limit]');
+            const fillEl = card.querySelector('[data-progress-fill]');
+            const textEl = card.querySelector('[data-progress-text]');
+            const rateEl = card.querySelector('[data-overage-rate]');
+            const costEl = card.querySelector('[data-overage-cost]');
+            if (limitEl) limitEl.textContent = limit ? `Free: ${formatNumber(limit)}/month` : '';
+            if (fillEl) fillEl.style.width = pct + '%';
+            if (textEl) textEl.textContent = used ? `${formatNumber(used)} used (${pct}%)` : '';
+            if (rateEl) rateEl.textContent = rate ? String(rate) : '';
+            if (costEl) costEl.textContent = cost ? String(cost) : '';
+        });
+        // Usage trend line (last 6 months)
+        const trendEl = document.getElementById('usageTrendChart');
+        if (trendEl) {
+            const byMonth = {};
+            res.data.forEach(r => {
+                const m = r.month || r.period || r.record_date || '';
+                if (!m) return;
+                if (!byMonth[m]) byMonth[m] = 0;
+                byMonth[m] += Number(r.total_usage || r.used || 0);
+            });
+            const months = Object.keys(byMonth).sort().slice(-6);
+            const vals = months.map(m => byMonth[m]);
+            if (chartInstances['usageTrend']) { try { chartInstances['usageTrend'].destroy(); } catch{} delete chartInstances['usageTrend']; }
+            const options = {
+                series: [{ name: 'Total Usage', data: vals }],
+                chart: { type: 'line', height: 330, toolbar: { show: false } },
+                stroke: { curve: 'smooth', width: 3 },
+                xaxis: { categories: months },
+                yaxis: { labels: { formatter: v => formatNumber(Math.round(v)) } },
+                colors: ['#407CEE']
+            };
+            chartInstances['usageTrend'] = new ApexCharts(trendEl, options);
+            chartInstances['usageTrend'].render();
+        }
+    } catch (e) { console.warn('usage-breakdown failed', e); }
+}
+
+async function fetchPaymentHistory() {
+    try {
+        const res = await fetchAPI('/api/billing/payment-history');
+        if (!(res.success && Array.isArray(res.data))) return;
+        const table = document.querySelector('#billing [data-payment-table]');
+        if (!table) return;
+        // Remove existing rows except header
+        table.querySelectorAll('.payment-row').forEach(r => r.remove());
+        res.data.forEach(r => {
+            const row = document.createElement('div');
+            row.className = 'payment-row';
+            row.innerHTML = `
+                <div class="payment-date">${r.payment_date || r.date || ''}</div>
+                <div class="payment-description">${r.description || r.notes || ''}</div>
+                <div class="payment-amount">${formatCurrency(r.amount || 0)}</div>
+                <div class="payment-status ${String(r.status||'').toLowerCase()}">${r.status || ''}</div>
+                <div class="payment-action">${r.invoice_url ? `<a class="download-btn" href="${r.invoice_url}" target="_blank"><i class=\"fas fa-download\"></i></a>` : ''}</div>`;
+            table.appendChild(row);
+        });
+    } catch (e) { console.warn('payment-history failed', e); }
+}
+
+async function fetchUsageAlerts() {
+    try {
+        const res = await fetchAPI('/api/billing/alerts');
+        const list = document.querySelector('#billing [data-alert-list]');
+        if (!list) return;
+        list.innerHTML = '';
+        if (!(res.success && Array.isArray(res.data))) return;
+        res.data.forEach(r => {
+            const item = document.createElement('div');
+            const level = (r.level || r.type || 'info').toLowerCase();
+            item.className = `alert-item ${level}`;
+            item.innerHTML = `
+                <div class="alert-icon"><i class="fas ${level==='error'?'fa-times-circle':(level==='warning'?'fa-exclamation-triangle':'fa-info-circle')}"></i></div>
+                <div class="alert-content">
+                    <div class="alert-title">${r.title || ''}</div>
+                    <div class="alert-description">${r.message || r.description || ''}</div>
+                    <div class="alert-time">${r.created_at || ''}</div>
+                </div>`;
+            list.appendChild(item);
+        });
+    } catch (e) { console.warn('usage-alerts failed', e); }
+}
+
+async function fetchAIModelPerformanceTrend() {
+    const container = document.getElementById('modelPerformanceChart');
+    if (!container) return;
+    try {
+        const res = await fetchAPI('/api/ai/model-performance');
+        if (res.success && res.categories && res.series) {
+            updateAIModelPerformanceTrend(res);
+        } else {
+            container.innerHTML = '<div class="no-data">No model performance data</div>';
+        }
+    } catch (e) {
+        console.error('Failed to fetch model performance trend', e);
+        container.innerHTML = '<div class="no-data">No model performance data</div>';
+    }
+}
+
+function updateAIModelPerformanceTrend(payload) {
+    const container = document.getElementById('modelPerformanceChart');
+    if (!container || !payload || !payload.series || payload.series.length === 0) {
+        if (container) container.innerHTML = '<div class="no-data">No model performance data</div>';
+        return;
+    }
+    // Prepare series (multiple models)
+    const dates = payload.categories.map(d => {
+        try { return new Date(d).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }); } catch { return d; }
+    });
+    const series = payload.series.map(s => ({ name: s.name, data: s.data }));
+    if (chartInstances['aiPerfTrend']) {
+        try { chartInstances['aiPerfTrend'].destroy(); } catch {}
+        delete chartInstances['aiPerfTrend'];
+    }
+    const options = {
+        series: series,
+        chart: { height: 360, type: 'line' },
+        stroke: { width: 3, curve: 'smooth' },
+        xaxis: { categories: dates },
+        yaxis: { title: { text: 'Accuracy (%)' }, min: 80, max: 100 },
+        tooltip: { shared: true },
+        legend: { position: 'top' },
+        markers: { size: 3 },
+        colors: ['#407CEE', '#ff7a59', '#52c41a', '#ffa500'],
+        stroke: {
+            curve: 'smooth',
+            width: [3, 3, 3, 3],
+            dashArray: [0, 5, 0, 0] // dashed for v2.2 to visually separate
+        }
+    };
+    chartInstances['aiPerfTrend'] = new ApexCharts(container, options);
+    chartInstances['aiPerfTrend'].render();
+}
+
+async function fetchAISummary() {
+    try {
+        const res = await fetchAPI('/api/ai/summary');
+        if (res.success && res.data) {
+            updateAISummary(res.data);
+        }
+    } catch (e) {
+        console.error('Failed to fetch AI summary', e);
+    }
+}
+
+function updateAISummary(data) {
+    const page = document.getElementById('ai-performance');
+    if (!page || !data) return;
+    const cards = page.querySelectorAll('.kpi-card .kpi-value');
+    if (cards && cards.length >= 4) {
+        // Accuracy (%)
+        cards[0].textContent = `${parseFloat(data.accuracy || 0).toFixed(1)}%`;
+        // Response time (ms to seconds)
+        const secs = (parseInt(data.response_time_ms || 0) / 1000).toFixed(1);
+        cards[1].textContent = `${secs}s`;
+        // Confidence score
+        cards[2].textContent = `${(parseFloat(data.confidence || 0)).toFixed(2)}`;
+        // A/B winner card value
+        cards[3].textContent = data.ab_winner || '—';
+        // Update the subtitle for winner improvement
+        const subtitles = page.querySelectorAll('.kpi-card .kpi-subtitle');
+        if (subtitles && subtitles.length >= 4) {
+            subtitles[3].textContent = `${data.ab_improvement_pct > 0 ? '+' : ''}${(data.ab_improvement_pct || 0).toFixed(0)}% better performance`;
+        }
+    }
+}
+
+async function fetchCrossSellUpsell() {
+    const container = document.querySelector('[data-product-analytics]')?.closest('.dashboard-page') || document;
+    const chartHolder = document.querySelector('#crossSellChart');
+    // The chart area is in the "Product Performance Analytics" card
+    const rightCard = document.querySelector('.charts-row .chart-card') || document;
+    let chartEl = document.getElementById('crossSellChart');
+    if (!chartEl) {
+        const placeholderParent = document.querySelector('.chart-card .chart-header + div') || document.querySelector('.chart-card');
+    }
+    try {
+        const res = await fetchAPI('/api/products/cross-sell-upsell');
+        if (res.success && res.data) {
+            updateCrossSellUpsellChart(res.data);
+        }
+    } catch (e) {
+        console.error('Failed to fetch cross sell/upsell', e);
+    }
+}
+
+function updateCrossSellUpsellChart(data) {
+    let container = document.querySelector('#crossSellChart');
+    if (!container) {
+        // Create a container inside the right-hand chart card under the title
+        const cards = document.querySelectorAll('.chart-card');
+        const target = cards[cards.length - 1] || document.body;
+        const div = document.createElement('div');
+        div.id = 'crossSellChart';
+        div.style.minHeight = '360px';
+        target.appendChild(div);
+        container = div;
+    }
+    container.innerHTML = '';
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="no-data">No cross-sell/upsell data</div>';
+        return;
+    }
+    // Sort by totals
+    const sorted = [...data].sort((a,b) => (b.cross_sell + b.upsell) - (a.cross_sell + a.upsell));
+    const categories = sorted.map(d => d.category);
+    const cross = sorted.map(d => d.cross_sell);
+    const upsell = sorted.map(d => d.upsell);
+    if (chartInstances['crossSell']) {
+        try { chartInstances['crossSell'].destroy(); } catch {}
+        delete chartInstances['crossSell'];
+    }
+    const options = {
+        series: [
+            { name: 'Cross-sell', data: cross },
+            { name: 'Upsell', data: upsell }
+        ],
+        chart: { type: 'bar', height: 380, stacked: true, toolbar: { show: false } },
+        plotOptions: { 
+            bar: { 
+                horizontal: true, 
+                barHeight: '60%', 
+                borderRadius: 4,
+                dataLabels: {
+                    position: 'center'
+                }
+            } 
+        },
+        dataLabels: { 
+            enabled: true,
+            formatter: function(val){ return formatNumber(Math.round(val)); },
+            style: { colors: ['#ffffff'] }
+        },
+        xaxis: { categories },
+        colors: ['#407CEE', '#5b8ff5'],
+        legend: { position: 'top' },
+        tooltip: { y: { formatter: val => formatNumber(val) } }
+    };
+    chartInstances['crossSell'] = new ApexCharts(container, options);
+    chartInstances['crossSell'].render();
 }
 
 // ============================================================
@@ -2585,6 +3419,7 @@ function initializeTabNavigation() {
                     // Load page-specific data if needed
                     if (targetPage === 'conversions') {
                         fetchConversionTrends();
+                        fetchConversionAnalytics();
                     } else if (targetPage === 'interactions') {
                         fetchInteractionStats();
                         fetchInteractionTimeline();
@@ -2600,6 +3435,533 @@ function initializeTabNavigation() {
     });
 }
 
+// ============================================================
+// Revenue Impact Tabs
+// ============================================================
+
+function initializeRevenueTabs() {
+    const container = document.querySelector('#revenue');
+    if (!container) return;
+    const buttons = container.querySelectorAll('.revenue-tabs .tab-btn');
+    const tabs = container.querySelectorAll('.revenue-tabs .tab-content');
+    if (!buttons.length || !tabs.length) return;
+
+    function activate(tabKey) {
+        // toggle button active
+        buttons.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tabKey);
+        });
+        // toggle tab content
+        tabs.forEach(tab => {
+            const id = tab.id || '';
+            const key = id.replace('-tab', '');
+            tab.classList.toggle('active', key === tabKey);
+            tab.style.display = key === tabKey ? '' : 'none';
+        });
+        // load data based on tab
+        if (tabKey === 'attribution') {
+            fetchRevenueSummary();
+            fetchRevenueAttribution();
+            updateRevenueGrowthChartFromAttribution();
+            renderRevenueByFeatureList();
+        } else if (tabKey === 'categories') {
+            fetchCategoryRevenue();
+        } else if (tabKey === 'customer-value') {
+            // Reuse CLV endpoint and render into the distribution container
+            fetchCustomerLifetimeValueForDistribution();
+        } else if (tabKey === 'forecasting') {
+            fetchRevenueForecasting();
+        }
+    }
+
+    buttons.forEach(btn => {
+        btn.addEventListener('click', () => activate(btn.dataset.tab));
+    });
+
+    // ensure initial state
+    activate('attribution');
+}
+
+// Category Performance (donut + growth list) from database
+async function fetchCategoryPerformance() {
+    const donut = document.getElementById('categoryRevenueChart');
+    const listContainer = document.querySelector('.category-metrics');
+    if (!donut || !listContainer) return;
+    try {
+        const res = await fetchAPI('/api/products/category-performance');
+        if (!(res.success && Array.isArray(res.data))) {
+            donut.innerHTML = '<div class="no-data">No category data</div>';
+            listContainer.innerHTML = '<div class="no-data">No category data</div>';
+            return;
+        }
+        // Filter by selected date range on the client side
+        const now = new Date();
+        const start = new Date((function(){
+            if (currentDateRange === '7d') return Date.now() - 7*86400000;
+            if (currentDateRange === '30d') return Date.now() - 30*86400000;
+            if (currentDateRange === '90d') return Date.now() - 90*86400000;
+            return Date.now() - 365*86400000;
+        })());
+        let rows = res.data.filter(r => {
+            const d = new Date(r.record_date || r.date);
+            return d >= start && d <= now;
+        });
+        // Fallback: if the selected window has no category rows (e.g., 7d),
+        // use the latest available month from the full dataset so the panel is never empty
+        if (rows.length === 0) {
+            const all = res.data.slice().sort((a,b) => new Date(a.record_date||a.date) - new Date(b.record_date||b.date));
+            const last = all[all.length-1];
+            if (last) {
+                const lastMonthKey = (new Date(last.record_date||last.date)).toISOString().slice(0,7);
+                rows = all.filter(r => (new Date(r.record_date||r.date)).toISOString().slice(0,7) === lastMonthKey);
+            }
+        }
+        // Aggregate totals per category for the donut
+        const totals = {};
+        rows.forEach(r => {
+            const cat = r.category_name || r.category || 'Other';
+            const amount = Number(r.total_revenue || r.revenue || 0);
+            totals[cat] = (totals[cat] || 0) + amount;
+        });
+        const cats = Object.keys(totals);
+        const values = cats.map(c => totals[c]);
+        updateCategoryRevenueDonut(donut, cats, values);
+
+        // Growth list: compare latest month vs previous month per category
+        const byMonthCat = {};
+        function monthKey(d) {
+            const dt = new Date(d);
+            return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,'0')}`;
+        }
+        rows.forEach(r => {
+            const key = monthKey(r.record_date || r.date);
+            const cat = r.category_name || r.category || 'Other';
+            const amt = Number(r.total_revenue || r.revenue || 0);
+            if (!byMonthCat[key]) byMonthCat[key] = {};
+            byMonthCat[key][cat] = (byMonthCat[key][cat] || 0) + amt;
+        });
+        const monthKeys = Object.keys(byMonthCat).sort();
+        const latestKey = monthKeys[monthKeys.length - 1];
+        // If previous month is not in the filtered set, try to fetch it from the full dataset
+        let prevKey = monthKeys[monthKeys.length - 2];
+        if (!prevKey) {
+            const allMonths = Array.from(new Set(res.data.map(r => monthKey(r.record_date||r.date)))).sort();
+            const idx = allMonths.indexOf(latestKey);
+            prevKey = idx > 0 ? allMonths[idx - 1] : undefined;
+        }
+        const latest = byMonthCat[latestKey] || {};
+        // Build prev month map either from current filtered data or from full dataset
+        let prev = byMonthCat[prevKey] || {};
+        if (prevKey && Object.keys(prev).length === 0) {
+            prev = {};
+            res.data.forEach(r => {
+                const mk = monthKey(r.record_date||r.date);
+                if (mk === prevKey) {
+                    const cat = r.category_name || r.category || 'Other';
+                    const amt = Number(r.total_revenue || r.revenue || 0);
+                    prev[cat] = (prev[cat] || 0) + amt;
+                }
+            });
+        }
+        const items = cats
+            .map(c => {
+                const curr = latest[c] || 0;
+                const p = prev[c] || 0;
+                const growth = p > 0 ? ((curr - p) / p) * 100 : 0;
+                return { name: c, value: curr, growth: Number(growth.toFixed(0)) };
+            })
+            .sort((a,b) => b.value - a.value)
+            .slice(0, 5);
+        updateCategoryGrowthList(listContainer, items);
+    } catch (e) {
+        console.error('Failed to fetch category performance', e);
+    }
+}
+
+function updateCategoryRevenueDonut(container, categories, values) {
+    container.innerHTML = '';
+    const options = {
+        series: values,
+        chart: { type: 'donut', height: 360 },
+        labels: categories,
+        legend: { position: 'bottom' },
+        dataLabels: { enabled: true, formatter: (v) => v.toFixed(1) + '%' },
+        tooltip: { y: { formatter: v => formatCurrency(v) } },
+        plotOptions: {
+            pie: { donut: { size: '65%' } }
+        },
+        colors: ['#407CEE', '#48d1cc', '#ffa500', '#5b8ff5', '#7ba3f7']
+    };
+    const chart = new ApexCharts(container, options);
+    chart.render();
+}
+
+function updateCategoryGrowthList(container, items) {
+    container.innerHTML = items.map(it => `
+        <div class="metric-item">
+            <span class="metric-label">${it.name}</span>
+            <div class="metric-value">${formatCurrency(it.value)}</div>
+            <div class="metric-change ${it.growth >= 0 ? 'positive' : 'negative'}">${it.growth >= 0 ? '+' : ''}${it.growth}%</div>
+        </div>
+    `).join('');
+    try { window.latestBestOpportunity = (items && items.length) ? items[0].name : ''; } catch {}
+}
+
+// Revenue growth chart derived from attribution timeline totals if available
+async function updateRevenueGrowthChartFromAttribution() {
+    const container = document.getElementById('revenueGrowthChart');
+    if (!container) return;
+    try {
+        const res = await fetchAPI('/api/revenue/attribution');
+        if (!(res.success && Array.isArray(res.data))) {
+            container.innerHTML = '<div class="no-data">No revenue data</div>';
+            return;
+        }
+        // Decide aggregation unit based on selected period
+        let unit = 'month';
+        if (currentDateRange === '7d') unit = 'day';
+        if (currentDateRange === '30d' || currentDateRange === '90d') unit = 'week';
+
+        // Aggregate revenue by unit (day/week/month)
+        const bucketMap = {};
+        const bucketOrder = [];
+        function bucketKey(dateStr) {
+            const d = new Date(dateStr);
+            if (unit === 'day') return d.toISOString().slice(0, 10);
+            if (unit === 'week') {
+                // ISO week start (Mon)
+                const day = d.getUTCDay() || 7; // 1..7
+                const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day + 1));
+                return monday.toISOString().slice(0, 10);
+            }
+            // month
+            return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-01`;
+        }
+        res.data.forEach(r => {
+            const ds = r.record_date || r.date;
+            const amt = Number(r.revenue_amount || 0);
+            if (!ds) return;
+            const key = bucketKey(ds);
+            if (!(key in bucketMap)) {
+                bucketMap[key] = 0;
+                bucketOrder.push(key);
+            }
+            bucketMap[key] += amt;
+        });
+        bucketOrder.sort();
+        const totals = bucketOrder.map(k => bucketMap[k]);
+
+        // Compute growth rate (%) vs previous bucket
+        const growth = totals.map((v, i) => {
+            if (i === 0) return 0;
+            const prev = totals[i-1];
+            if (!prev) return 0;
+            return ((v - prev) / prev) * 100.0;
+        }).map(v => Number(v.toFixed(1)));
+
+        // Labels for x-axis
+        const labels = bucketOrder.map(k => {
+            const d = new Date(k);
+            if (unit === 'day') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            if (unit === 'week') return `Week ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+            return d.toLocaleDateString('en-US', { month: 'short' });
+        });
+
+        const options = {
+            series: [
+                { name: 'Revenue', type: 'column', data: totals },
+                { name: 'Growth Rate', type: 'line', data: growth }
+            ],
+            chart: { height: 360, type: 'line', stacked: false },
+            xaxis: { categories: labels },
+            yaxis: [
+                {
+                    title: { text: 'Revenue (€)' },
+                    labels: { formatter: v => (v>=1000000? (v/1000000).toFixed(1)+'M' : (v>=1000? (v/1000).toFixed(0)+'K' : v.toFixed(0))) }
+                },
+                {
+                    opposite: true,
+                    title: { text: 'Growth Rate (%)' },
+                    labels: { formatter: v => v.toFixed(1) + '%' }
+                }
+            ],
+            colors: ['#407CEE', '#52c41a'],
+            dataLabels: {
+                enabled: true,
+                enabledOnSeries: [1], // only show on growth line
+                formatter: function(val) { return (val !== null && val !== undefined) ? val.toFixed(1) : '0'; }
+            },
+            markers: { size: 4, colors: ['#fff'], strokeColors: ['#52c41a'], strokeWidth: 2 },
+            stroke: { curve: 'smooth', width: [0, 3] },
+            legend: { position: 'bottom' },
+            tooltip: {
+                shared: true,
+                y: [
+                    { formatter: v => formatCurrency(v) },
+                    { formatter: v => (v!=null? v.toFixed(1):'0') + '%' }
+                ]
+            }
+        };
+        container.innerHTML = '';
+        const chart = new ApexCharts(container, options);
+        chart.render();
+    } catch (e) {
+        console.error('Failed to build revenue growth chart', e);
+    }
+}
+
+// Populate the "Revenue by AI Feature" list so it's not hardcoded
+async function renderRevenueByFeatureList() {
+    const container = document.querySelector('.attribution-breakdown');
+    if (!container) return;
+    try {
+        const res = await fetchAPI('/api/revenue/attribution');
+        if (!(res.success && Array.isArray(res.data))) return;
+        const totals = {};
+        let grand = 0;
+        res.data.forEach(r => {
+            const feat = r.ai_feature || r.revenue_source || 'Unknown';
+            const amt = Number(r.revenue_amount || 0);
+            totals[feat] = (totals[feat] || 0) + amt;
+            grand += amt;
+        });
+        const featureOrder = ['Chat Recommendations', 'Questionnaire Guidance', 'Image Analysis', 'Routine Planner'];
+        const items = Object.keys(totals)
+            .sort((a,b) => (featureOrder.indexOf(a) === -1 ? 99 : featureOrder.indexOf(a)) - (featureOrder.indexOf(b) === -1 ? 99 : featureOrder.indexOf(b)))
+            .map(name => ({ name, value: totals[name], pct: grand > 0 ? (totals[name] / grand) * 100 : 0 }));
+        const iconMap = {
+            'Chat Recommendations': { icon: 'fa-comments', bg: 'linear-gradient(135deg, #407CEE, #5b8ff5)' },
+            'Questionnaire Guidance': { icon: 'fa-clipboard-list', bg: 'linear-gradient(135deg, #48d1cc, #40e0d0)' },
+            'Image Analysis': { icon: 'fa-image', bg: 'linear-gradient(135deg, #ffa500, #ff8c00)' },
+            'Routine Planner': { icon: 'fa-calendar-check', bg: 'linear-gradient(135deg, #90ee90, #7dd87d)' }
+        };
+        container.innerHTML = items.map(it => {
+            const meta = iconMap[it.name] || { icon: 'fa-chart-line', bg: 'linear-gradient(135deg, #94b0fa, #7ba3f7)' };
+            const width = Math.max(8, Math.round(it.pct));
+            return `
+                <div class="attribution-item">
+                    <div class="attribution-icon" style="background: ${meta.bg};">
+                        <i class="fas ${meta.icon}"></i>
+                    </div>
+                    <div class="attribution-details">
+                        <h4>${it.name}</h4>
+                        <div class="attribution-value">${formatCurrency(it.value)}</div>
+                        <div class="attribution-bar">
+                            <div class="bar-fill" style="width: ${width}%;"></div>
+                        </div>
+                    </div>
+                </div>`;
+        }).join('');
+    } catch (e) {
+        console.error('Failed to render revenue by feature list', e);
+    }
+}
+
+// Customer value distribution: render into clvDistributionChart
+async function fetchCustomerLifetimeValueForDistribution() {
+    const container = document.getElementById('clvDistributionChart');
+    if (!container) return;
+    try {
+        const res = await fetchAPI('/api/customers/lifetime-value');
+        if (res.success && Array.isArray(res.data)) {
+            let rows = res.data;
+            // Only attempt date filtering if the payload includes dates
+            const hasDates = rows.some(r => r.record_date || r.date);
+            if (hasDates) {
+                const now = new Date();
+                const start = new Date((function(){
+                    if (currentDateRange === '7d') return Date.now() - 7*86400000;
+                    if (currentDateRange === '30d') return Date.now() - 30*86400000;
+                    if (currentDateRange === '90d') return Date.now() - 90*86400000;
+                    return Date.now() - 365*86400000;
+                })());
+                rows = rows.filter(r => {
+                    const d = new Date(r.record_date || r.date);
+                    return d >= start && d <= now;
+                });
+                if (rows.length === 0) {
+                    const all = res.data.slice().sort((a,b) => new Date(a.record_date||a.date) - new Date(b.record_date||b.date));
+                    const last = all[all.length-1];
+                    if (last) {
+                        const lastKey = (new Date(last.record_date||last.date)).toISOString().slice(0,10);
+                        rows = all.filter(r => (new Date(r.record_date||r.date)).toISOString().slice(0,10) === lastKey);
+                    }
+                }
+            }
+            updateCLVDistributionChart(rows);
+            updateValueSegmentsFromCLV(rows);
+        } else {
+            container.innerHTML = '<div class="no-data">No lifetime value data</div>';
+            updateValueSegmentsFromCLV([]);
+        }
+    } catch (e) {
+        console.error('Failed to fetch CLV distribution', e);
+    }
+}
+
+function updateCLVDistributionChart(data) {
+    const container = document.getElementById('clvDistributionChart');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="no-data">No lifetime value data</div>';
+        return;
+    }
+    const order = ['0-30d', '31-60d', '61-90d', '91-180d', '181-365d', '1-2y', '2y+'];
+    const sorted = [...data].sort((a, b) => order.indexOf(a.segment_name || '') - order.indexOf(b.segment_name || ''));
+    const categories = sorted.map(d => d.segment_name || 'Segment');
+    const values = sorted.map(d => (Number(d.current_clv || 0) + Number(d.predicted_clv || 0)) / 2000);
+    const options = {
+        series: [{ name: 'Avg CLV', data: values }],
+        chart: { type: 'area', height: 360 },
+        dataLabels: { enabled: false },
+        stroke: { curve: 'smooth', width: 2 },
+        xaxis: { categories },
+        yaxis: { labels: { formatter: v => '€' + v.toFixed(0) + 'K' } },
+        colors: ['#5b8ff5'],
+        fill: { type: 'gradient', gradient: { opacityFrom: 0.6, opacityTo: 0.1 } }
+    };
+    const chart = new ApexCharts(container, options);
+    chart.render();
+}
+
+function updateValueSegmentsFromCLV(rows) {
+    const panel = document.querySelector('#customer-value-tab .value-segments');
+    if (!panel) return;
+    // Build value array to determine dynamic thresholds (no hardcoded ranges)
+    const values = rows.map(r => Number(r.predicted_clv || r.current_clv || 0)).filter(v => !isNaN(v));
+    if (values.length === 0) {
+        // Clear cards
+        ['High Value','Medium Value','Growth Potential'].forEach(label => {
+            const card = Array.from(panel.querySelectorAll('.segment-card')).find(c => c.querySelector('h4')?.textContent.includes(label));
+            if (card) {
+                ['.segment-value','.segment-count','.segment-revenue'].forEach(sel => {
+                    const el = card.querySelector(sel); if (el) el.textContent = '';
+                });
+            }
+        });
+        return;
+    }
+    const sorted = values.slice().sort((a,b) => a-b);
+    const q1 = sorted[Math.floor(sorted.length * 0.33)];
+    const q2 = sorted[Math.floor(sorted.length * 0.66)];
+    const buckets = {
+        low:   { name: 'Growth Potential', count: 0, revenue: 0, label: `< ${formatCurrency(q1)}` },
+        medium:{ name: 'Medium Value', count: 0, revenue: 0, label: `${formatCurrency(q1)}–${formatCurrency(q2)}` },
+        high:  { name: 'High Value', count: 0, revenue: 0, label: `${formatCurrency(q2)}+` }
+    };
+    rows.forEach(r => {
+        const val = Number(r.predicted_clv || r.current_clv || 0);
+        const key = val < q1 ? 'low' : (val <= q2 ? 'medium' : 'high');
+        buckets[key].count += 1;
+        buckets[key].revenue += val;
+    });
+    function setCard(selectorText, bucket) {
+        const card = Array.from(panel.querySelectorAll('.segment-card')).find(c => c.querySelector('h4')?.textContent.includes(selectorText));
+        if (!card) return;
+        const valueEl = card.querySelector('.segment-value');
+        const countEl = card.querySelector('.segment-count');
+        const revEl = card.querySelector('.segment-revenue');
+        if (valueEl) valueEl.textContent = bucket.label;
+        if (countEl) countEl.textContent = `${bucket.count.toLocaleString()} ${bucket.count === 1 ? 'customer' : 'customers'}`;
+        if (revEl) revEl.textContent = `${formatCurrency(bucket.revenue)} revenue`;
+    }
+    setCard('High Value', buckets.high);
+    setCard('Medium Value', buckets.medium);
+    setCard('Growth Potential', buckets.low);
+}
+
+// Revenue forecasting line chart
+async function fetchRevenueForecasting() {
+    const container = document.getElementById('forecastChart');
+    if (!container) return;
+    try {
+        // Pull attribution (historical) and forecasting (next months)
+        const [attr, fc] = await Promise.all([
+            fetchAPI('/api/revenue/attribution'),
+            fetchAPI('/api/revenue/forecasting')
+        ]);
+
+        if (!(attr.success && Array.isArray(attr.data) && attr.data.length > 0)) {
+            container.innerHTML = '<div class="no-data">No revenue data</div>';
+            return;
+        }
+        // Build monthly historical totals (last 6–12 months)
+        const monthMap = {};
+        attr.data.forEach(r => {
+            const d = r.record_date || r.date;
+            if (!d) return;
+            const dt = new Date(d);
+            const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-01`;
+            monthMap[key] = (monthMap[key] || 0) + Number(r.revenue_amount || 0);
+        });
+        const months = Object.keys(monthMap).sort();
+        const lastHistMonths = months.slice(-12); // up to last 12 months
+        const histValues = lastHistMonths.map(m => monthMap[m]);
+        const histLabels = lastHistMonths.map(m => {
+            try { return new Date(m).toLocaleDateString('en-US', { month:'short' }); } catch { return m; }
+        });
+
+        // Forecast must come from DB – no mock fallbacks
+        if (!(fc.success && Array.isArray(fc.data) && fc.data.length > 0)) {
+            container.innerHTML = '<div class="no-data">No forecast data</div>';
+            updateForecastInsights([], []);
+            return;
+        }
+        const forecastValues = fc.data.map(r => Number(r.forecast_value || r.predicted_revenue || r.revenue || 0));
+        const forecastLabels = fc.data.map(d => {
+            const val = d.forecast_date || d.date || d.month_start;
+            try { return new Date(val).toLocaleDateString('en-US', { month:'short' }); } catch { return val; }
+        });
+
+        const options = {
+            series: [
+                { name: 'Historical', data: histValues },
+                { name: 'Forecast', data: new Array(Math.max(histValues.length-1,0)).fill(null).concat([histValues[histValues.length-1]]).concat(forecastValues) }
+            ],
+            chart: { height: 360, type: 'line' },
+            xaxis: { categories: histLabels.concat(forecastLabels) },
+            yaxis: { labels: { formatter: v => (v>=1000? (v/1000).toFixed(0)+'K' : v.toFixed(0)) } },
+            stroke: { curve: 'smooth', width: [3,3], dashArray: [0,4] },
+            colors: ['#407CEE','#2ecc71'],
+            markers: { size: [0,0] },
+            legend: { position: 'bottom' }
+        };
+        container.innerHTML = '';
+        const chart = new ApexCharts(container, options);
+        chart.render();
+        updateForecastInsights(histValues, forecastValues);
+    } catch (e) {
+        console.error('Failed to fetch revenue forecasting', e);
+    }
+}
+
+function updateForecastInsights(histValues, forecastValues) {
+    try {
+        const growthEl = document.querySelector('[data-forecast-growth]');
+        const targetEl = document.querySelector('[data-forecast-target]');
+        const oppEl = document.querySelector('[data-forecast-opportunity]');
+        if (growthEl) {
+            const lastHist = histValues.length ? histValues[histValues.length-1] : 0;
+            const lastFc = forecastValues.length ? forecastValues[forecastValues.length-1] : 0;
+            if (lastHist > 0 && lastFc > 0) {
+                const pct = ((lastFc - lastHist) / lastHist) * 100;
+                growthEl.textContent = `${pct.toFixed(0)}%`;
+            } else {
+                growthEl.textContent = '';
+            }
+        }
+        if (targetEl) {
+            const next3 = forecastValues.slice(0, 3).reduce((a, b) => a + (b || 0), 0);
+            targetEl.textContent = next3 ? formatCurrency(next3) : '';
+        }
+        if (oppEl) {
+            oppEl.textContent = window.latestBestOpportunity || '';
+        }
+    } catch (e) {
+        console.warn('updateForecastInsights failed', e);
+    }
+}
 // ============================================================
 // Add CSS for loading states and animations
 // ============================================================
@@ -2731,9 +4093,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     initializeDateRangeSelector();
     initializeFunnelPeriodButtons();
     initializeTabNavigation();
+    initializeRevenueTabs();
+    initializeApiConfigTabs();
     initializeDataFetching();
     
-    // Check backend health before loading data
+    // Check backend health to optionally show a banner if server is down
     const isHealthy = await checkBackendHealth();
     if (!isHealthy) {
         console.error('[App] Backend server is not running!');
@@ -2747,10 +4111,57 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelectorAll('[data-kpi]').forEach(el => {
             el.innerHTML = '<div class="error" style="color: red; padding: 10px;">Server offline</div>';
         });
-    } else {
-        console.log('[App] Backend server is healthy, loading data...');
-        // Load data after a short delay to ensure DOM is ready
-        setTimeout(() => loadAllData(), 100);
+    }
+
+// ============================================================
+// API Configuration Tabs (Customer API, Product API, etc.)
+// ============================================================
+function initializeApiConfigTabs() {
+    const page = document.getElementById('api-config');
+    if (!page) return;
+
+    // Delegate clicks to any element inside the API config tab nav
+    page.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-tab], a[href^="#"]');
+        if (!btn || !page.contains(btn)) return;
+
+        let key = btn.dataset.tab;
+        if (!key) {
+            const href = btn.getAttribute('href') || '';
+            if (!href.startsWith('#')) return;
+            key = href.slice(1);
+            e.preventDefault();
+        }
+
+        // Find panels; support different markup conventions (including config-tab-content)
+        const panels = page.querySelectorAll('.config-tab-content, .tab-content, .api-tab, .tab-panel');
+        if (panels.length) {
+            panels.forEach(p => {
+                const id = p.id || '';
+                const shouldShow = id === key || id === `${key}-tab` || id === `${key}-panel`;
+                p.style.display = shouldShow ? '' : 'none';
+                p.classList.toggle('active', shouldShow);
+            });
+        }
+
+        // Toggle active state on nav items
+        const buttons = page.querySelectorAll('[data-tab], a[href^="#"]');
+        buttons.forEach(b => b.classList.toggle('active', b === btn));
+    });
+
+    // Ensure an initial tab is visible
+    const firstPanel = page.querySelector('.config-tab-content, .tab-content, .api-tab, .tab-panel');
+    if (firstPanel) {
+        const id = firstPanel.id;
+        const buttons = page.querySelectorAll(`[data-tab="${id}"] , a[href="#${id}"] , [data-tab="${id.replace(/-(tab|panel)$/,'')}"]`);
+        if (buttons.length) buttons[0].classList.add('active');
+        firstPanel.style.display = '';
+        firstPanel.classList.add('active');
+        // Hide the rest
+        page.querySelectorAll('.config-tab-content, .tab-content, .api-tab, .tab-panel').forEach(p => {
+            if (p !== firstPanel) p.style.display = 'none';
+        });
+    }
     }
     
     // Auto refresh disabled to avoid flicker; uncomment to enable

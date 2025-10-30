@@ -14,7 +14,11 @@ A Flask-based analytics dashboard backend with SQLite3 database for SmartShopie 
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Create database from schema
+# 2. Create database (choose one)
+# 2a) Using Python helper script (recommended)
+python create_database_sqlite.py
+
+# 2b) Using sqlite3 CLI
 sqlite3 smartshopie_dashboard.db < database_schema.sql
 
 # 3. Seed demo data (optional but recommended)
@@ -33,7 +37,10 @@ python run.py
 ### Create Database
 
 ```bash
-# SQLite command line
+# Option A: Python helper script
+python create_database_sqlite.py
+
+# Option B: SQLite command line
 sqlite3 smartshopie_dashboard.db < database_schema.sql
 ```
 
@@ -47,6 +54,42 @@ with open('database_schema.sql', 'r') as f:
 conn = sqlite3.connect('smartshopie_dashboard.db')
 conn.executescript(schema)
 conn.close()
+```
+
+### Database Schema Overview
+
+The schema in `database_schema.sql` defines analytics-focused tables with appropriate indexes for fast queries:
+
+- `overview_kpis` (daily KPIs with deltas)
+- `conversion_funnel` (stage counts, percentages, drop-offs)
+- `interaction_types` (counts by interaction type)
+- `conversion_analytics` (summary rates, AI attributions)
+- `conversion_trends` (periodic conversions and AI-attributed conversions)
+- `customer_segments` (segment size, AOV, CLV)
+- `behavioral_patterns` (pattern/value metrics)
+- `customer_concerns` (concern categories and AI success)
+- `customer_lifetime_value` (predicted/current CLV by segment)
+- `product_gaps` (demand and potential revenue by product)
+- `product_analytics` (views, recs, purchases, revenue)
+- `category_performance` (category-level rollups)
+- `ai_model_performance` and `ai_feature_performance` (model/feature KPIs)
+- `customer_interactions` and `interaction_summary` (volume and latency)
+- `revenue_summary`, `revenue_attribution`, `category_revenue` (revenue KPIs)
+- `customer_value_analysis` (tiered value breakdown)
+- `revenue_forecasting` (predictions and confidence bounds)
+- `system_health` (system component metrics)
+- `api_endpoints` (endpoint status and performance)
+- `billing_summary`, `usage_breakdown`, `billing_payments`, `usage_alerts` (billing/usage)
+
+Indexes are created for common filter keys (dates, names, categories) to keep API responses snappy even on larger datasets.
+
+### Create/Reset the database
+
+To recreate the DB after schema changes:
+
+```bash
+rm -f smartshopie_dashboard.db
+python create_database_sqlite.py
 ```
 
 ### Seed Data
@@ -105,6 +148,7 @@ SmartShopieDB/
 ├── app.py                      # Flask backend
 ├── dashboard.html              # Dashboard frontend
 ├── database_schema.sql         # Database schema
+├── create_database_sqlite.py   # Helper to create DB from schema
 ├── seed_demo_data.py          # Data seeding script
 ├── run.py                     # Server startup
 ├── assets/                     # Static assets (CSS, JS)

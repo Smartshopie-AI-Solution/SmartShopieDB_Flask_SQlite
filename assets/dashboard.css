@@ -3033,3 +3033,31 @@ body {
         align-self: flex-start;
     }
 }
+
+/* Responsive Enhancements and Animations */
+img {
+	max-width: 100%;
+	height: auto;
+	display: block;
+}
+
+.reveal {
+	opacity: 0;
+	transform: translateY(12px);
+	transition: opacity 0.5s ease, transform 0.5s ease;
+	will-change: opacity, transform;
+}
+
+.reveal.in-view {
+	opacity: 1;
+	transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	* {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}

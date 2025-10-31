@@ -1780,9 +1780,19 @@ def get_billing_alerts():
 
 @app.route('/api/config', methods=['GET'])
 def get_api_configurations():
-    """Get API configurations"""
+    """Get API configurations - returns latest configuration for each API type"""
     try:
-        data = db.execute_query("SELECT * FROM api_configurations")
+        # Get the most recent configuration for each api_type
+        query = """
+            SELECT * FROM api_configurations 
+            WHERE id IN (
+                SELECT MAX(id) 
+                FROM api_configurations 
+                GROUP BY api_type
+            )
+            ORDER BY api_type
+        """
+        data = db.execute_query(query)
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500

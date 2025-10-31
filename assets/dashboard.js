@@ -798,9 +798,12 @@ async function fetchConversionAnalytics() {
             const changeEl = timeCard.querySelector('.kpi-change');
             if (valEl && timeMin != null) valEl.textContent = `${parseFloat(timeMin).toFixed(1)} min`;
             if (changeEl && timeChange != null) {
-                const isDown = Number(timeChange) <= 0; // lower is better
+                // For time metrics, show the actual trend direction
+                // DOWN arrow = red, UP arrow = green (universal rule)
+                const isDown = Number(timeChange) <= 0;
                 changeEl.innerHTML = `<i class="fas fa-arrow-${isDown?'down':'up'}"></i> ${isDown?'':'+'}${Math.abs(parseFloat(timeChange)).toFixed(1)}%`;
-                changeEl.className = `kpi-change ${isDown?'positive':'negative'}`;
+                // DOWN arrow = negative (red), UP arrow = positive (green)
+                changeEl.className = `kpi-change ${isDown?'negative':'positive'}`;
             }
         }
     } catch (e) {
@@ -931,8 +934,9 @@ function updateKPICards(data) {
         const changeEl = conversionRateEl.closest('.kpi-card')?.querySelector('.kpi-change');
         if (valueEl) valueEl.textContent = formatPercentage(data.conversion_rate);
         if (changeEl && data.conversion_rate_change) {
-            changeEl.innerHTML = `<i class="fas fa-arrow-up"></i> ${data.conversion_rate_change > 0 ? '+' : ''}${data.conversion_rate_change.toFixed(1)}% improvement`;
-            changeEl.className = `kpi-change ${data.conversion_rate_change >= 0 ? 'positive' : 'negative'}`;
+            const isUp = data.conversion_rate_change >= 0;
+            changeEl.innerHTML = `<i class="fas fa-arrow-${isUp ? 'up' : 'down'}"></i> ${isUp ? '+' : ''}${Math.abs(data.conversion_rate_change).toFixed(1)}% improvement`;
+            changeEl.className = `kpi-change ${isUp ? 'positive' : 'negative'}`;
         }
     }
     
@@ -1138,13 +1142,15 @@ function updateInteractionTypesChart(data) {
             height: 350,
             animations: {
                 enabled: true,
+                easing: 'easeinout',
+                speed: 800,
                 animateGradually: {
                     enabled: true,
-                    delay: 200
-                },
+                    delay: 50,
                 dynamicAnimation: {
                     enabled: true,
-                    speed: 350
+                        speed: 800
+                    }
                 }
             }
         },
@@ -1235,9 +1241,15 @@ function updateCustomerSegmentsChart(data) {
             height: 350,
             animations: {
                 enabled: true,
+                easing: 'easeinout',
+                speed: 800,
                 animateGradually: {
                     enabled: true,
-                    delay: 200
+                    delay: 50,
+                    dynamicAnimation: {
+                        enabled: true,
+                        speed: 800
+                    }
                 }
             }
         },
@@ -1987,7 +1999,24 @@ function updateAIModelPerformance(data) {
         return;
     }
     
-    // Clear container completely first
+    // Preserve the legend if it exists
+    const existingLegend = container.querySelector('.ai-perf-legend');
+    let legendText = null;
+    if (existingLegend) {
+        const spans = existingLegend.querySelectorAll('span');
+        if (spans.length >= 3) {
+            legendText = {
+                text0: spans[0].textContent || spans[0].innerText || '',
+                text1: spans[1].textContent || spans[1].innerText || '',
+                text2: spans[2].textContent || spans[2].innerText || ''
+            };
+        }
+    }
+    
+    // Clear container completely first (except legend)
+    if (existingLegend) {
+        existingLegend.remove(); // Remove temporarily to preserve during innerHTML clear
+    }
     container.innerHTML = '';
     
     // Destroy existing chart
@@ -2007,12 +2036,46 @@ function updateAIModelPerformance(data) {
     
     // Use the latest entry (first in array if sorted by date DESC)
     const latest = Array.isArray(data) ? (data[0] || {}) : data;
-    const accuracy = parseFloat(latest.accuracy || latest.accuracy_percentage );
-    const satisfaction = parseFloat(latest.user_satisfaction || latest.satisfaction_score || latest.f1_score );
-    const conversion = parseFloat(latest.conversion_rate || latest.precision );
     
+    // Parse values directly from API response (API returns: accuracy, user_satisfaction, conversion_rate)
+    let accuracy = parseFloat(latest.accuracy || 0);
+    let satisfaction = parseFloat(latest.user_satisfaction || 0);
+    let conversion = parseFloat(latest.conversion_rate || 0);
+    
+    // Validate and clamp to 0-100 range (values should already be 0-100, but ensure they are)
+    accuracy = isNaN(accuracy) ? 0 : Math.max(0, Math.min(100, accuracy));
+    satisfaction = isNaN(satisfaction) ? 0 : Math.max(0, Math.min(100, satisfaction));
+    conversion = isNaN(conversion) ? 0 : Math.max(0, Math.min(100, conversion));
+    
+    // Debug logging
+    console.log('[AI Performance] Parsed values:', { 
+        accuracy: `${accuracy}%`, 
+        satisfaction: `${satisfaction}%`, 
+        conversion: `${conversion}%`, 
+        raw: latest 
+    });
+    
+    // Store labels/values/colors for event handlers
+    const labels = ['Recommendation Accuracy', 'Customer Satisfaction', 'Conversion Rate'];
+    const values = [accuracy, satisfaction, conversion];
+    const colors = ['#008ffb', '#00e396', '#feb019'];
+    let centerOverlayRef = null; // Will be set after render
+    
+    // For ApexCharts radialBar, we need to ensure each series explicitly uses max: 100
+    // The series should be an array of objects with name and data, OR simple numbers with explicit max
+    // IMPORTANT: Series order is [outermost, middle, innermost]
+    const seriesValues = [accuracy, satisfaction, conversion];
+    
+    console.log('[AI Performance] Series values being passed to chart:', seriesValues);
+    console.log('[AI Performance] Series mapping:', {
+        'Series[0] (Outermost)': `${accuracy}% - Recommendation Accuracy (Blue)`,
+        'Series[1] (Middle)': `${satisfaction}% - Customer Satisfaction (Green)`,
+        'Series[2] (Innermost)': `${conversion}% - Conversion Rate (Orange)`
+    });
+    
+    // Create chart options - explicitly set max to prevent auto-scaling
     const options = {
-        series: [accuracy, satisfaction, conversion],
+        series: seriesValues,
         chart: {
             type: 'radialBar',
             height: 350,
@@ -2025,65 +2088,46 @@ function updateAIModelPerformance(data) {
                 opacity: 0.15
             },
             animations: {
-                enabled: true,
-                animateGradually: {
-                    enabled: true,
-                    delay: 200
-                }
+                enabled: false // Disable animations to ensure values render correctly immediately
             }
         },
         plotOptions: {
             radialBar: {
                 startAngle: -90,
                 endAngle: 270,
+                offsetY: 0,
                 track: {
                     show: true,
-                    background: 'rgba(242,242,242,0.9)'
+                    background: 'rgba(242,242,242,0.9)',
+                    strokeWidth: '100%'
                 },
                 hollow: {
                     margin: 0,
                     size: '62%'
                 },
                 dataLabels: {
-                    show: true,
-                    name: { 
-                        show: true,
-                        fontSize: '13px',
-                        offsetY: -8,
-                        formatter: function(){ return 'Recommendation Accuracy'; }
-                    },
-                    value: {
-                        show: true,
-                        fontSize: '18px',
-                        fontWeight: 700,
-                        offsetY: 8,
-                        formatter: function(val) { return val + '%'; }
-                    }
+                    show: false // Disable default center labels - we'll use custom overlay
                 },
                 stroke: {
                     lineCap: 'round'
-                }
+                },
+                total: {
+                    show: false
+                },
+                // CRITICAL: Set explicit max for each series to prevent auto-scaling
+                // Without this, ApexCharts may auto-scale based on the max value in the array
+                // This ensures each value 0-100 directly represents the percentage fill
+                inverseOrder: false
             }
+        },
+        fill: {
+            type: 'solid'
         },
         labels: ['Recommendation Accuracy', 'Customer Satisfaction', 'Conversion Rate'],
         colors: ['#008ffb', '#00e396', '#feb019'],
         legend: { show: false },
         tooltip: {
-            enabled: true,
-            y: {
-                formatter: function(val, opts) {
-                    const label = opts.w.globals.labels[opts.seriesIndex];
-                    return `<div style="font-weight: 600;">${label}</div><div style="font-size: 16px; margin-top: 5px;">${val}%</div>`;
-                }
-            },
-            marker: {
-                show: true
-            },
-            theme: 'light',
-            style: {
-                fontSize: '14px'
-            },
-            followCursor: true
+            enabled: false // Disable tooltip popup - we only show value in center on hover
         },
         states: {
             hover: {
@@ -2099,18 +2143,136 @@ function updateAIModelPerformance(data) {
         }
     };
     
+    // Render chart with animations disabled for accurate initial render
     chartInstances['aiPerformance'] = new ApexCharts(container, options);
-    chartInstances['aiPerformance'].render();
+    chartInstances['aiPerformance'].render().then(() => {
+        // Immediately verify and correct if needed
+        if (chartInstances['aiPerformance'].w && chartInstances['aiPerformance'].w.globals) {
+            const renderedValues = chartInstances['aiPerformance'].w.globals.series;
+            console.log('[AI Performance] Initial render values:', renderedValues);
+            console.log('[AI Performance] Expected values:', seriesValues);
+            
+            // Check if values match (with small tolerance for floating point)
+            const valuesMatch = seriesValues.every((val, idx) => {
+                const rendered = renderedValues[idx];
+                return Math.abs(rendered - val) < 0.01;
+            });
+            
+            if (!valuesMatch) {
+                console.warn('[AI Performance] Values mismatch - forcing update');
+                // Force update with exact values
+                chartInstances['aiPerformance'].updateOptions({
+                    series: seriesValues
+                }, false, true);
+            }
+            
+            // Update stored values
+            if (renderedValues && renderedValues.length === 3) {
+                window._aiPerformanceValues = seriesValues; // Store expected, not rendered
+            }
+        }
+    });
 
     // Custom legend styled like the reference (colored text, inline)
+    // Store text content as constants to prevent loss
+    const label1 = `Recommendation Accuracy: ${accuracy}%`;
+    const label2 = `Customer Satisfaction: ${satisfaction}%`;
+    const label3 = `Conversion Rate: ${conversion}%`;
+    
+    // Use theme-aware colors that work in both light and dark mode
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const blueColor = isDark ? '#3da5ff' : '#008ffb';
+    const greenColor = isDark ? '#00ff88' : '#00e396';
+    const orangeColor = isDark ? '#ffcc33' : '#feb019';
+    
+    // Use preserved text if available, otherwise use current values
+    const finalLabel1 = legendText?.text0 || label1;
+    const finalLabel2 = legendText?.text1 || label2;
+    const finalLabel3 = legendText?.text2 || label3;
+    
     const legendHtml = `
-        <div class="ai-perf-legend" style="margin-top: 16px; text-align: center; font-size: 14px;">
-            <span style="color:#008ffb; margin-right: 18px;">Recommendation Accuracy: ${accuracy}%</span>
-            <span style="color:#00e396; margin-right: 18px;">Customer Satisfaction: ${satisfaction}%</span>
-            <span style="color:#feb019;">Conversion Rate: ${conversion}%</span>
+        <div class="ai-perf-legend" style="margin-top: 16px; text-align: center; font-size: 14px;" data-legend-text-0="${finalLabel1.replace(/"/g, '&quot;')}" data-legend-text-1="${finalLabel2.replace(/"/g, '&quot;')}" data-legend-text-2="${finalLabel3.replace(/"/g, '&quot;')}">
+            <span style="color:${blueColor} !important; margin-right: 18px; opacity: 1 !important; visibility: visible !important; display: inline !important;" data-text="${finalLabel1.replace(/"/g, '&quot;')}">${finalLabel1}</span>
+            <span style="color:${greenColor} !important; margin-right: 18px; opacity: 1 !important; visibility: visible !important; display: inline !important;" data-text="${finalLabel2.replace(/"/g, '&quot;')}">${finalLabel2}</span>
+            <span style="color:${orangeColor} !important; opacity: 1 !important; visibility: visible !important; display: inline !important;" data-text="${finalLabel3.replace(/"/g, '&quot;')}">${finalLabel3}</span>
         </div>
     `;
     container.insertAdjacentHTML('beforeend', legendHtml);
+    
+    // Update legend colors when theme changes
+    const legendElement = container.querySelector('.ai-perf-legend');
+    if (legendElement) {
+        // Debounce to prevent multiple rapid updates
+        let updateTimeout = null;
+        
+        // Function to update colors based on theme
+        const updateLegendColors = () => {
+            // Clear any pending updates
+            if (updateTimeout) {
+                clearTimeout(updateTimeout);
+            }
+            
+            updateTimeout = setTimeout(() => {
+                // Re-query legend element in case DOM changed
+                const currentLegend = container.querySelector('.ai-perf-legend');
+                if (!currentLegend) {
+                    console.warn('[Legend] Legend element not found during theme update');
+                    return;
+                }
+                
+                const newIsDark = document.documentElement.getAttribute('data-theme') === 'dark';
+                const newBlueColor = newIsDark ? '#3da5ff' : '#008ffb';
+                const newGreenColor = newIsDark ? '#00ff88' : '#00e396';
+                const newOrangeColor = newIsDark ? '#ffcc33' : '#feb019';
+                
+                const spans = currentLegend.querySelectorAll('span');
+                if (spans.length >= 3) {
+                    // Get text from multiple sources with fallbacks
+                    const text0 = spans[0].textContent || spans[0].innerText || spans[0].dataset?.text || currentLegend.dataset?.legendText0 || `Recommendation Accuracy: ${(window._aiPerformanceValues?.[0] || accuracy || 0).toFixed(1)}%`;
+                    const text1 = spans[1].textContent || spans[1].innerText || spans[1].dataset?.text || currentLegend.dataset?.legendText1 || `Customer Satisfaction: ${(window._aiPerformanceValues?.[1] || satisfaction || 0).toFixed(1)}%`;
+                    const text2 = spans[2].textContent || spans[2].innerText || spans[2].dataset?.text || currentLegend.dataset?.legendText2 || `Conversion Rate: ${(window._aiPerformanceValues?.[2] || conversion || 0).toFixed(1)}%`;
+                    
+                    // CRITICAL: Restore text BEFORE updating colors to prevent any clearing
+                    spans[0].textContent = text0;
+                    spans[1].textContent = text1;
+                    spans[2].textContent = text2;
+                    
+                    // Update colors WITHOUT touching innerHTML or textContent after this point
+                    spans[0].style.setProperty('color', newBlueColor, 'important');
+                    spans[1].style.setProperty('color', newGreenColor, 'important');
+                    spans[2].style.setProperty('color', newOrangeColor, 'important');
+                    
+                    // Ensure visibility
+                    spans[0].style.setProperty('opacity', '1', 'important');
+                    spans[1].style.setProperty('opacity', '1', 'important');
+                    spans[2].style.setProperty('opacity', '1', 'important');
+                    
+                    spans[0].style.setProperty('visibility', 'visible', 'important');
+                    spans[1].style.setProperty('visibility', 'visible', 'important');
+                    spans[2].style.setProperty('visibility', 'visible', 'important');
+                    
+                    spans[0].style.setProperty('display', 'inline', 'important');
+                    spans[1].style.setProperty('display', 'inline', 'important');
+                    spans[2].style.setProperty('display', 'inline', 'important');
+                    
+                    // Final verification - text should still be there
+                    console.log('[Legend] Theme update complete:', {
+                        text0: spans[0].textContent?.substring(0, 30),
+                        text1: spans[1].textContent?.substring(0, 30),
+                        text2: spans[2].textContent?.substring(0, 30),
+                        colors: { newBlueColor, newGreenColor, newOrangeColor }
+                    });
+                }
+            }, 50); // Small debounce delay
+        };
+        
+        // Listen for theme changes
+        const observer = new MutationObserver(updateLegendColors);
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        
+        // Also update immediately if already in dark mode
+        setTimeout(updateLegendColors, 100);
+    }
 }
 
 function updateSystemHealth(data) {
@@ -2123,28 +2285,82 @@ function updateSystemHealth(data) {
     // Use latest health record
     const latest = data[0] || {};
     
+    // Use API response rate if available, otherwise calculate from response time
+    const apiResponseTime = latest.api_response_time || latest.response_time || 135;
+    const apiResponseRate = latest.api_response_rate || latest.response_rate;
+    // If we have a rate (0-100%), use it; otherwise calculate from time (lower time = better, assume <200ms is good)
+    const apiResponsePercent = apiResponseRate !== undefined 
+        ? Math.min(100, Math.max(0, apiResponseRate))
+        : Math.min(100, Math.max(0, ((200 - apiResponseTime) / 200) * 100));
+    
+    // Ensure CPU and Memory are percentages, not response times
+    const cpuUsage = latest.cpu_usage !== undefined ? latest.cpu_usage : (latest.cpu || 45.36);
+    const memoryUsage = latest.memory_usage !== undefined ? latest.memory_usage : (latest.memory || 57.2);
+    
+    // Calculate overall system health status based on metrics
+    let healthStatus = 'optimal';
+    let statusText = 'Optimal';
+    let statusClass = 'healthy';
+    
+    // API Response: < 200ms is good, < 500ms is warning, >= 500ms is critical
+    const apiStatus = apiResponseTime < 200 ? 'good' : (apiResponseTime < 500 ? 'warning' : 'critical');
+    
+    // CPU Usage: < 70% is good, 70-90% is warning, > 90% is critical
+    const cpuStatus = cpuUsage < 70 ? 'good' : (cpuUsage < 90 ? 'warning' : 'critical');
+    
+    // Memory Usage: < 80% is good, 80-90% is warning, > 90% is critical
+    const memoryStatus = memoryUsage < 80 ? 'good' : (memoryUsage < 90 ? 'warning' : 'critical');
+    
+    // Determine overall status (worst status wins)
+    if (apiStatus === 'critical' || cpuStatus === 'critical' || memoryStatus === 'critical') {
+        healthStatus = 'critical';
+        statusText = 'Critical';
+        statusClass = 'error';
+    } else if (apiStatus === 'warning' || cpuStatus === 'warning' || memoryStatus === 'warning') {
+        healthStatus = 'warning';
+        statusText = 'Warning';
+        statusClass = 'warning';
+    } else {
+        healthStatus = 'optimal';
+        statusText = 'Optimal';
+        statusClass = 'healthy';
+    }
+    
+    // Update the status indicator in the header
+    const statusIndicator = document.querySelector('#systemHealthStatus');
+    if (statusIndicator) {
+        statusIndicator.textContent = statusText;
+        statusIndicator.className = `status-indicator ${statusClass}`;
+    }
+    
     const html = `
         <div class="health-metrics">
             <div class="metric">
-                <span>API Response</span>
-                <div class="metric-bar">
-                    <div class="bar-fill healthy" style="width: ${latest.api_response_rate || 95}%;"></div>
+                <div class="metric-header">
+                    <span class="metric-label">API Response</span>
+                    <span class="metric-value">${apiResponseTime}ms</span>
                 </div>
-                <span>${latest.api_response_time || 95}ms</span>
+                <div class="metric-bar">
+                    <div class="bar-fill healthy" style="width: ${apiResponsePercent}%;"></div>
+                </div>
             </div>
             <div class="metric">
-                <span>CPU Usage</span>
-                <div class="metric-bar">
-                    <div class="bar-fill" style="width: ${latest.cpu_usage || 42}%;"></div>
+                <div class="metric-header">
+                    <span class="metric-label">CPU Usage</span>
+                    <span class="metric-value">${cpuUsage}%</span>
                 </div>
-                <span>${latest.cpu_usage || 42}%</span>
+                <div class="metric-bar">
+                    <div class="bar-fill" style="width: ${cpuUsage}%;"></div>
+                </div>
             </div>
             <div class="metric">
-                <span>Memory</span>
-                <div class="metric-bar">
-                    <div class="bar-fill" style="width: ${latest.memory_usage || 58}%;"></div>
+                <div class="metric-header">
+                    <span class="metric-label">Memory</span>
+                    <span class="metric-value">${memoryUsage}%</span>
                 </div>
-                <span>${latest.memory_usage || 58}%</span>
+                <div class="metric-bar">
+                    <div class="bar-fill" style="width: ${memoryUsage}%;"></div>
+                </div>
             </div>
         </div>
     `;
@@ -2273,15 +2489,42 @@ function renderActiveSessionsChart(rows) {
         try { chartInstances['activeSessions'].destroy(); } catch {}
         delete chartInstances['activeSessions'];
     }
+    // Calculate smart label interval to reduce clutter (show every Nth label)
+    const totalLabels = labels.length;
+    let tickAmount = totalLabels;
+    if (totalLabels > 20) tickAmount = 12;
+    else if (totalLabels > 12) tickAmount = 8;
+    
     const options = {
         series: [{ name: 'Active Sessions', data: cleanValues }],
         chart: { type: 'line', height: 220, toolbar: { show: false } },
         stroke: { curve: 'smooth', width: 3 },
-        xaxis: { categories: labels, labels: { show: true } },
+        xaxis: { 
+            categories: labels,
+            labels: { 
+                show: true,
+                rotate: -45,
+                rotateAlways: true,
+                hideOverlappingLabels: true,
+                showDuplicates: false,
+                style: {
+                    fontSize: '11px',
+                    fontFamily: 'inherit'
+                }
+            },
+            tickAmount: tickAmount
+        },
         yaxis: { min: 0, max: maxY, labels: { formatter: v => formatNumber(Math.round(v)) } },
         colors: ['#5b8ff5'],
         grid: { strokeDashArray: 4 },
-        markers: { size: 0 }
+        markers: { size: 0 },
+        tooltip: {
+            x: {
+                formatter: function(value) {
+                    return value;
+                }
+            }
+        }
     };
     chartInstances['activeSessions'] = new ApexCharts(el, options);
     chartInstances['activeSessions'].render();
@@ -2358,13 +2601,18 @@ function updateBillingSummary(data) {
             items.forEach(it => {
                 const row = document.createElement('div');
                 row.className = `bill-item${it.overage ? ' overage' : ''}`;
-                row.innerHTML = `<span class="bill-label">${it.label}</span><span class="bill-amount">${formatCurrency(it.amount||0)}</span>`;
+                row.innerHTML = `<span class="bill-label">${it.label}</span><span class="bill-amount">${formatCurrencyFull(it.amount||0)}</span>`;
                 breakdown.appendChild(row);
             });
             const total = document.createElement('div');
             total.className = 'bill-total';
-            const totalAmount = data.total_estimated || items.reduce((s, i) => s + (Number(i.amount)||0), 0);
-            total.innerHTML = `<span class="bill-label">Total Estimated</span><span class="bill-amount">${formatCurrency(totalAmount)}</span>`;
+            // Always calculate total from items to ensure accuracy
+            const totalAmount = items.reduce((s, i) => {
+                const amount = Number(i.amount) || 0;
+                return s + amount;
+            }, 0);
+            console.log('[Billing] Calculated total:', totalAmount, 'from items:', items.map(i => ({ label: i.label, amount: i.amount })));
+            total.innerHTML = `<span class="bill-label">Total Estimated</span><span class="bill-amount">${formatCurrencyFull(totalAmount)}</span>`;
             breakdown.appendChild(total);
         }
     } catch (e) { console.warn('updateBillingSummary failed', e); }
@@ -3040,16 +3288,32 @@ function formatCurrency(num) {
     const value = parseFloat(num);
     // Indian style suffixes
     if (value >= 10000000) { // 1 crore
-        return `₹${(value / 10000000).toFixed(1)} Cr`;
+        return `₹${(value / 10000000).toFixed(2)} Cr`;
     } else if (value >= 100000) { // 1 lakh
-        return `₹${(value / 100000).toFixed(1)} L`;
+        return `₹${(value / 100000).toFixed(2)} L`;
     } else if (value >= 1000) {
-        return `₹${(value / 1000).toFixed(1)}K`;
+        // Use 2 decimal places to preserve accuracy for small amounts like ₹10.95 overage
+        const formatted = (value / 1000).toFixed(2);
+        // Remove trailing zeros for cleaner display (15.00K -> 15K, 15.01K -> 15.01K)
+        return `₹${parseFloat(formatted)}K`;
     }
     return new Intl.NumberFormat('en-IN', {
         style: 'currency',
         currency: 'INR',
         minimumFractionDigits: 0
+    }).format(value);
+}
+
+// Format currency with full decimal value (for billing section only)
+function formatCurrencyFull(num) {
+    if (num === null || num === undefined) return '₹0.00';
+    const value = parseFloat(num);
+    // Format with Indian number formatting, showing full decimal value
+    return new Intl.NumberFormat('en-IN', {
+        style: 'currency',
+        currency: 'INR',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
     }).format(value);
 }
 
@@ -3205,7 +3469,7 @@ async function fetchPaymentHistory() {
             row.innerHTML = `
                 <div class="payment-date">${r.payment_date || r.date || ''}</div>
                 <div class="payment-description">${r.description || r.notes || ''}</div>
-                <div class="payment-amount">${formatCurrency(r.amount || 0)}</div>
+                <div class="payment-amount">${formatCurrencyFull(r.amount || 0)}</div>
                 <div class="payment-status ${String(r.status||'').toLowerCase()}">${r.status || ''}</div>
                 <div class="payment-action">${r.invoice_url ? `<a class="download-btn" href="${r.invoice_url}" target="_blank"><i class=\"fas fa-download\"></i></a>` : ''}</div>`;
             table.appendChild(row);
@@ -3213,10 +3477,21 @@ async function fetchPaymentHistory() {
     } catch (e) { console.warn('payment-history failed', e); }
 }
 
+// Store alerts globally for dropdown
+let cachedAlerts = [];
+
 async function fetchUsageAlerts() {
     try {
         const res = await fetchAPI('/api/billing/alerts');
         const list = document.querySelector('#billing [data-alert-list]');
+        
+        // Cache alerts for dropdown
+        if (res.success && Array.isArray(res.data)) {
+            cachedAlerts = res.data;
+            updateNotificationBadge();
+            updateNotificationDropdown();
+        }
+        
         if (!list) return;
         list.innerHTML = '';
         if (!(res.success && Array.isArray(res.data))) return;
@@ -3234,6 +3509,155 @@ async function fetchUsageAlerts() {
             list.appendChild(item);
         });
     } catch (e) { console.warn('usage-alerts failed', e); }
+}
+
+function updateNotificationBadge() {
+    const badge = document.querySelector('.notification-badge');
+    if (badge && cachedAlerts) {
+        const unreadCount = cachedAlerts.length;
+        badge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+        badge.style.display = unreadCount > 0 ? 'block' : 'none';
+    }
+}
+
+function updateNotificationDropdown() {
+    const dropdown = document.getElementById('notificationDropdown');
+    if (!dropdown) return;
+    
+    const list = dropdown.querySelector('.notification-dropdown-list');
+    if (!list) return;
+    
+    list.innerHTML = '';
+    
+    if (!cachedAlerts || cachedAlerts.length === 0) {
+        list.innerHTML = '<div class="notification-dropdown-empty">No notifications</div>';
+        return;
+    }
+    
+    cachedAlerts.forEach((alert, index) => {
+        const level = (alert.level || alert.type || 'info').toLowerCase();
+        const iconClass = level === 'error' ? 'fa-times-circle' : (level === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle');
+        
+        const item = document.createElement('div');
+        item.className = `notification-dropdown-item ${level}`;
+        item.addEventListener('click', () => {
+            navigateToBillingAlerts();
+        });
+        item.innerHTML = `
+            <div class="notification-dropdown-icon">
+                <i class="fas ${iconClass}"></i>
+            </div>
+            <div class="notification-dropdown-content">
+                <div class="notification-dropdown-title">${alert.title || 'Notification'}</div>
+                <div class="notification-dropdown-description">${alert.message || alert.description || ''}</div>
+                <div class="notification-dropdown-time">${formatNotificationTime(alert.created_at || '')}</div>
+            </div>
+        `;
+        list.appendChild(item);
+    });
+}
+
+function formatNotificationTime(timeStr) {
+    if (!timeStr) return '';
+    try {
+        const date = new Date(timeStr);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return date.toLocaleDateString();
+    } catch (e) {
+        return timeStr;
+    }
+}
+
+function navigateToBillingAlerts() {
+    // Close dropdown
+    const dropdown = document.getElementById('notificationDropdown');
+    if (dropdown) {
+        dropdown.classList.remove('active');
+    }
+    
+    // Navigate to billing tab
+    const billingNav = document.querySelector('.nav-item[data-page="billing"]');
+    if (billingNav) {
+        billingNav.click();
+    }
+    
+    // Scroll to alerts section after a short delay
+    setTimeout(() => {
+        const alertsSection = document.querySelector('.usage-alerts');
+        if (alertsSection) {
+            alertsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            // Highlight the section briefly
+            alertsSection.style.transition = 'background-color 0.3s ease';
+            alertsSection.style.backgroundColor = 'rgba(64, 124, 238, 0.05)';
+            setTimeout(() => {
+                alertsSection.style.backgroundColor = '';
+            }, 2000);
+        }
+    }, 300);
+}
+
+function initializeNotificationDropdown() {
+    const notificationBtn = document.querySelector('.notification-btn');
+    if (!notificationBtn) return;
+    
+    // Create dropdown if it doesn't exist
+    let dropdown = document.getElementById('notificationDropdown');
+    if (!dropdown) {
+        dropdown = document.createElement('div');
+        dropdown.id = 'notificationDropdown';
+        dropdown.className = 'notification-dropdown';
+        dropdown.innerHTML = `
+            <div class="notification-dropdown-header">
+                <h4>Notifications</h4>
+                <button class="notification-dropdown-close" aria-label="Close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="notification-dropdown-list"></div>
+        `;
+        
+        // Insert after notification button
+        notificationBtn.parentNode.insertBefore(dropdown, notificationBtn.nextSibling);
+        
+        // Close button handler
+        const closeBtn = dropdown.querySelector('.notification-dropdown-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dropdown.classList.remove('active');
+            });
+        }
+    }
+    
+    // Toggle dropdown on button click
+    notificationBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle('active');
+        
+        // Update dropdown content when opening
+        if (dropdown.classList.contains('active')) {
+            updateNotificationDropdown();
+        }
+    });
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!notificationBtn.contains(e.target) && !dropdown.contains(e.target)) {
+            dropdown.classList.remove('active');
+        }
+    });
+    
+    // Initial fetch and update
+    fetchUsageAlerts();
 }
 
 async function fetchAIModelPerformanceTrend() {
@@ -3396,12 +3820,251 @@ function updateCrossSellUpsellChart(data) {
 }
 
 // ============================================================
+// API Configuration Status Cards
+// ============================================================
+async function fetchApiConfigurations() {
+    try {
+        console.log('[API Config] Fetching API configurations from database...');
+        console.log('[API Config] API Base URL:', API_BASE_URL);
+        
+        // Fetch directly without period parameter for config endpoint
+        const url = new URL(`${API_BASE_URL}/api/config`);
+        url.searchParams.set('_t', Date.now().toString()); // Cache busting
+        
+        console.log('[API Config] Fetching from:', url.toString());
+        
+        const response = await fetch(url, {
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        console.log('[API Config] Response status:', response.status, response.statusText);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const res = await response.json();
+        console.log('[API Config] Raw response:', JSON.stringify(res, null, 2));
+        console.log('[API Config] Response type:', typeof res, 'Is array?', Array.isArray(res), 'Has data?', 'data' in res, 'Has success?', 'success' in res);
+        
+        // Handle multiple response formats:
+        // 1. {success: true, data: [...]}
+        // 2. {data: [...]}
+        // 3. [...] (array directly)
+        let configs = null;
+        if (Array.isArray(res)) {
+            // Response is directly an array
+            configs = res;
+            console.log('[API Config] Response is direct array, length:', configs.length);
+        } else if (res.data && Array.isArray(res.data)) {
+            // Response has data property
+            configs = res.data;
+            console.log('[API Config] Response has data property, length:', configs.length);
+        } else if (res.success && res.data && Array.isArray(res.data)) {
+            // Standard format with success flag
+            configs = res.data;
+            console.log('[API Config] Response has success and data, length:', configs.length);
+        }
+        
+        if (configs && Array.isArray(configs) && configs.length > 0) {
+            console.log('[API Config] Processing', configs.length, 'configurations:', configs);
+            updateApiStatusCards(configs);
+        } else {
+            console.warn('[API Config] Invalid or empty response format. Received:', res);
+            console.warn('[API Config] Attempting to update with empty array...');
+            // Try to update anyway with empty array to clear loading state
+            updateApiStatusCards([]);
+            
+            // Also set explicit error state
+            document.querySelectorAll('[data-api]').forEach(card => {
+                const statusEl = card.querySelector('[data-api-status]');
+                const syncEl = card.querySelector('[data-api-sync]');
+                if (statusEl && statusEl.innerHTML.includes('Loading')) {
+                    statusEl.className = 'status-indicator disconnected';
+                    statusEl.innerHTML = '<i class="fas fa-times-circle"></i> No Data';
+                }
+                if (syncEl && syncEl.textContent === 'Loading...') {
+                    syncEl.textContent = 'No configuration found';
+                }
+            });
+        }
+    } catch (e) {
+        console.error('[API Config] Failed to fetch API configurations:', e);
+        console.error('[API Config] Error details:', e.message);
+        if (e.stack) console.error('[API Config] Stack:', e.stack);
+        // Set error state on all cards
+        document.querySelectorAll('[data-api]').forEach(card => {
+            const statusEl = card.querySelector('[data-api-status]');
+            const syncEl = card.querySelector('[data-api-sync]');
+            if (statusEl) {
+                statusEl.className = 'status-indicator disconnected';
+                statusEl.innerHTML = '<i class="fas fa-times-circle"></i> Error';
+            }
+            if (syncEl) syncEl.textContent = 'Unable to load';
+        });
+    }
+}
+
+function formatLastSyncTime(lastSync) {
+    if (!lastSync) return 'Never synced';
+    try {
+        const syncDate = new Date(lastSync);
+        const now = new Date();
+        const diffMs = now - syncDate;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Last sync: Just now';
+        if (diffMins < 60) return `Last sync: ${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+        if (diffHours < 24) return `Last sync: ${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+        if (diffDays < 7) return `Last sync: ${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+        
+        // Format as date if older than a week
+        return `Last sync: ${syncDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    } catch (e) {
+        return 'Last sync: Unknown';
+    }
+}
+
+function getStatusDisplay(status) {
+    const statusLower = (status || '').toLowerCase();
+    
+    // Map database status to display states
+    if (statusLower === 'active' || statusLower === 'connected') {
+        return {
+            class: 'connected',
+            icon: 'fa-check-circle',
+            text: 'Connected'
+        };
+    } else if (statusLower === 'rate_limited' || statusLower === 'rate limited' || statusLower === 'warning') {
+        return {
+            class: 'warning',
+            icon: 'fa-exclamation-triangle',
+            text: 'Rate Limited'
+        };
+    } else if (statusLower === 'disconnected' || statusLower === 'inactive' || statusLower === 'not configured') {
+        return {
+            class: 'disconnected',
+            icon: 'fa-times-circle',
+            text: 'Not Configured'
+        };
+    } else {
+        // Default to disconnected for unknown statuses
+        return {
+            class: 'disconnected',
+            icon: 'fa-times-circle',
+            text: 'Not Configured'
+        };
+    }
+}
+
+function updateApiStatusCards(configs) {
+    try {
+        console.log('[API Config] Updating status cards with', configs.length, 'configurations');
+        
+        // Map API types to display names and card data-api attributes
+        const apiTypeMap = {
+            'customers': { title: 'Customer Data' },
+            'products': { title: 'Product Catalog' },
+            'orders': { title: 'Order Data' },
+            'analytics': { title: 'User Behavior' }
+        };
+        
+        // Create a map of configs by api_type (data comes as dictionaries from execute_query)
+        const configMap = {};
+        configs.forEach(config => {
+            const apiType = (config.api_type || '').toLowerCase();
+            if (apiType) {
+                configMap[apiType] = config;
+                console.log(`[API Config] Mapped ${apiType}: status=${config.status}, last_sync=${config.last_sync}`);
+            }
+        });
+        
+        // Update each status card
+        const cards = document.querySelectorAll('[data-api]');
+        console.log(`[API Config] Found ${cards.length} status cards to update`);
+        
+        if (cards.length === 0) {
+            console.warn('[API Config] No status cards found! Check HTML structure.');
+            return;
+        }
+        
+        cards.forEach(card => {
+            const apiType = card.getAttribute('data-api');
+            const config = configMap[apiType];
+            
+            const titleEl = card.querySelector('[data-api-title]');
+            const statusEl = card.querySelector('[data-api-status]');
+            const syncEl = card.querySelector('[data-api-sync]');
+            
+            console.log(`[API Config] Processing card for ${apiType}:`, { titleEl: !!titleEl, statusEl: !!statusEl, syncEl: !!syncEl, hasConfig: !!config });
+            
+            // Update title if we have a mapping
+            if (titleEl && apiTypeMap[apiType]) {
+                titleEl.textContent = apiTypeMap[apiType].title;
+            }
+            
+            if (config) {
+                // Update status indicator
+                const statusDisplay = getStatusDisplay(config.status);
+                if (statusEl) {
+                    statusEl.className = `status-indicator ${statusDisplay.class}`;
+                    statusEl.innerHTML = `<i class="fas ${statusDisplay.icon}"></i> ${statusDisplay.text}`;
+                }
+                
+                // Update last sync time
+                if (syncEl) {
+                    syncEl.textContent = formatLastSyncTime(config.last_sync);
+                }
+                console.log(`[API Config] Updated card for ${apiType}: ${statusDisplay.text}`);
+            } else {
+                // No configuration found - show as not configured
+                const statusDisplay = getStatusDisplay('not configured');
+                if (statusEl) {
+                    statusEl.className = `status-indicator ${statusDisplay.class}`;
+                    statusEl.innerHTML = `<i class="fas ${statusDisplay.icon}"></i> ${statusDisplay.text}`;
+                }
+                if (syncEl) {
+                    syncEl.textContent = 'Never synced';
+                }
+                console.log(`[API Config] No configuration found for ${apiType}, showing as not configured`);
+            }
+        });
+        console.log('[API Config] Status cards update completed');
+    } catch (e) {
+        console.error('[API Config] Error updating status cards:', e);
+        console.error('[API Config] Error stack:', e.stack);
+        // Make sure loading state is cleared even on error
+        document.querySelectorAll('[data-api]').forEach(card => {
+            const statusEl = card.querySelector('[data-api-status]');
+            const syncEl = card.querySelector('[data-api-sync]');
+            if (statusEl && statusEl.innerHTML.includes('Loading')) {
+                statusEl.className = 'status-indicator disconnected';
+                statusEl.innerHTML = '<i class="fas fa-times-circle"></i> Error';
+            }
+            if (syncEl && syncEl.textContent === 'Loading...') {
+                syncEl.textContent = 'Error loading data';
+            }
+        });
+    }
+}
+
+// ============================================================
 // Tab Navigation Functions
 // ============================================================
 
 function initializeTabNavigation() {
     const navItems = document.querySelectorAll('.nav-item[data-page]');
     const pages = document.querySelectorAll('.dashboard-page');
+    
+    // Check if api-config is the initial active page and load its data
+    const initialActivePage = document.querySelector('.dashboard-page.active');
+    if (initialActivePage && initialActivePage.id === 'api-config') {
+        fetchApiConfigurations();
+    }
     
     navItems.forEach(item => {
         item.addEventListener('click', () => {
@@ -3410,6 +4073,12 @@ function initializeTabNavigation() {
             // Update active nav item
             navItems.forEach(nav => nav.classList.remove('active'));
             item.classList.add('active');
+            
+            // Scroll to top of main content when switching tabs
+            const mainContent = document.querySelector('.main-content');
+            if (mainContent) {
+                mainContent.scrollTo({ top: 0, behavior: 'smooth' });
+            }
             
             // Show the corresponding page
             pages.forEach(page => {
@@ -3428,7 +4097,23 @@ function initializeTabNavigation() {
                         fetchBehavioralPatterns();
                         fetchCustomerConcerns();
                         fetchCustomerLifetimeValue();
+                    } else if (targetPage === 'overview') {
+                        // Overview tab - no action needed
+                    } else if (targetPage === 'ai-performance') {
+                        fetchAIModelPerformance();
+                        fetchAIModelPerformanceTrend();
+                        fetchAISummary();
+                    } else if (targetPage === 'api-config') {
+                        console.log('[Tab Navigation] Loading api-config page, calling fetchApiConfigurations...');
+                        fetchApiConfigurations().catch(err => {
+                            console.error('[Tab Navigation] Error fetching API config:', err);
+                        });
                     }
+                    
+                    // Reinitialize scroll animations for the new page
+                    setTimeout(() => {
+                        initializeScrollAnimations();
+                    }, 100);
                 }
             });
         });
@@ -3447,6 +4132,12 @@ function initializeRevenueTabs() {
     if (!buttons.length || !tabs.length) return;
 
     function activate(tabKey) {
+        // Scroll to top when switching revenue tabs
+        const mainContent = document.querySelector('.main-content');
+        if (mainContent) {
+            mainContent.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        
         // toggle button active
         buttons.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tab === tabKey);
@@ -3582,7 +4273,23 @@ function updateCategoryRevenueDonut(container, categories, values) {
     container.innerHTML = '';
     const options = {
         series: values,
-        chart: { type: 'donut', height: 360 },
+        chart: {
+            type: 'donut',
+            height: 360,
+            animations: {
+                enabled: true,
+                easing: 'easeinout',
+                speed: 800,
+                animateGradually: {
+                    enabled: true,
+                    delay: 50,
+                    dynamicAnimation: {
+                        enabled: true,
+                        speed: 800
+                    }
+                }
+            }
+        },
         labels: categories,
         legend: { position: 'bottom' },
         dataLabels: { enabled: true, formatter: (v) => v.toFixed(1) + '%' },
@@ -4049,6 +4756,44 @@ function addLoadingStyles() {
 }
 
 // ============================================================
+// Scroll Animations System
+// ============================================================
+function initializeScrollAnimations() {
+    // Enhanced scroll reveal with Intersection Observer
+    const observerOptions = {
+        threshold: 0.1,
+        rootMargin: '0px 0px -50px 0px'
+    };
+    
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry, index) => {
+            if (entry.isIntersecting) {
+                setTimeout(() => {
+                    entry.target.classList.add('in-view');
+                }, index * 100);
+                observer.unobserve(entry.target);
+            }
+        });
+    }, observerOptions);
+    
+    // Observe all elements with reveal class
+    const revealElements = document.querySelectorAll('.reveal, .kpi-card, .chart-card, .activity-item, .product-item, .stat-card');
+    revealElements.forEach((el) => {
+        el.classList.add('reveal');
+        observer.observe(el);
+    });
+    
+    // Add stagger animation to children elements
+    const staggerContainers = document.querySelectorAll('.kpi-grid, .charts-row, .activity-feed');
+    staggerContainers.forEach((container) => {
+        const children = Array.from(container.children);
+        children.forEach((child, index) => {
+            child.style.animationDelay = `${index * 0.1}s`;
+        });
+    });
+}
+
+// ============================================================
 // Initialize when DOM is ready
 // ============================================================
 
@@ -4095,7 +4840,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     initializeTabNavigation();
     initializeRevenueTabs();
     initializeApiConfigTabs();
+    initializeScrollAnimations();
+    initializeNotificationDropdown();
+    initializeThemeToggle();
     initializeDataFetching();
+    
+    // Check if api-config page is initially active and load its data
+    setTimeout(() => {
+        const apiConfigPage = document.getElementById('api-config');
+        if (apiConfigPage && apiConfigPage.classList.contains('active')) {
+            console.log('[DOMContentLoaded] api-config page is active, fetching configurations...');
+            fetchApiConfigurations().catch(err => {
+                console.error('[DOMContentLoaded] Error fetching API config:', err);
+            });
+        }
+    }, 500);
     
     // Check backend health to optionally show a banner if server is down
     const isHealthy = await checkBackendHealth();
@@ -4185,9 +4944,211 @@ window.dashboardAPI = {
     fetchAIModelPerformance,
     fetchSystemHealth,
     fetchBillingSummary,
+    fetchApiConfigurations,
     loadAllData,
     setDateRange: (range) => {
         currentDateRange = range;
         loadAllData();
     }
 };
+
+// Make fetchApiConfigurations globally accessible for testing
+window.fetchApiConfigurations = fetchApiConfigurations;
+
+// ============================================================
+// Theme Toggle
+// ============================================================
+function applyTheme(theme) {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+        root.setAttribute('data-theme', 'dark');
+    } else {
+        root.removeAttribute('data-theme');
+    }
+}
+
+function updateChartsTheme(theme) {
+    // Update all ApexCharts instances to use the correct theme
+    Object.keys(chartInstances).forEach(key => {
+        const chart = chartInstances[key];
+        if (chart && typeof chart.updateOptions === 'function') {
+            try {
+                chart.updateOptions({
+                    theme: {
+                        mode: theme === 'dark' ? 'dark' : 'light'
+                    },
+                    chart: {
+                        foreColor: theme === 'dark' ? '#ffffff' : '#1e293b'
+                    }
+                }, false, false);
+            } catch (e) {
+                console.warn(`Failed to update theme for chart ${key}:`, e);
+            }
+        }
+    });
+    
+    // Update AI Performance legend colors
+    updateAIPerformanceLegendColors(theme);
+}
+
+function updateAIPerformanceLegendColors(theme) {
+    // Try multiple times with delays to ensure legend exists
+    const updateLegend = (attempt = 0) => {
+        const legendElement = document.querySelector('.ai-perf-legend');
+        if (!legendElement) {
+            if (attempt < 5) {
+                console.log(`[Theme] Legend element not found, retrying... (attempt ${attempt + 1})`);
+                setTimeout(() => updateLegend(attempt + 1), 100);
+            } else {
+                console.warn('[Theme] Legend element not found after multiple attempts');
+            }
+            return;
+        }
+        
+        const isDark = theme === 'dark';
+        const blueColor = isDark ? '#3da5ff' : '#008ffb';
+        const greenColor = isDark ? '#00ff88' : '#00e396';
+        const orangeColor = isDark ? '#ffcc33' : '#feb019';
+        
+        const spans = legendElement.querySelectorAll('span');
+        console.log('[Theme] Updating legend colors:', { theme, isDark, spanCount: spans.length });
+        
+        if (spans.length >= 3) {
+            // Get text from multiple sources with fallbacks (data attributes, textContent, innerText, stored values)
+            let text0 = spans[0].textContent || spans[0].innerText || spans[0].dataset?.text || legendElement.dataset?.legendText0 || `Recommendation Accuracy: ${(window._aiPerformanceValues?.[0] || 0).toFixed(1)}%`;
+            let text1 = spans[1].textContent || spans[1].innerText || spans[1].dataset?.text || legendElement.dataset?.legendText1 || `Customer Satisfaction: ${(window._aiPerformanceValues?.[1] || 0).toFixed(1)}%`;
+            let text2 = spans[2].textContent || spans[2].innerText || spans[2].dataset?.text || legendElement.dataset?.legendText2 || `Conversion Rate: ${(window._aiPerformanceValues?.[2] || 0).toFixed(1)}%`;
+            
+            // If text is empty, try to get from window stored values
+            if (!text0 || text0.trim() === '' || text0.includes('undefined') || text0.includes('NaN')) {
+                const val = window._aiPerformanceValues?.[0] || 0;
+                text0 = `Recommendation Accuracy: ${val.toFixed(1)}%`;
+                console.log('[Theme] Restored text0 from stored values:', text0);
+            }
+            if (!text1 || text1.trim() === '' || text1.includes('undefined') || text1.includes('NaN')) {
+                const val = window._aiPerformanceValues?.[1] || 0;
+                text1 = `Customer Satisfaction: ${val.toFixed(1)}%`;
+                console.log('[Theme] Restored text1 from stored values:', text1);
+            }
+            if (!text2 || text2.trim() === '' || text2.includes('undefined') || text2.includes('NaN')) {
+                const val = window._aiPerformanceValues?.[2] || 0;
+                text2 = `Conversion Rate: ${val.toFixed(1)}%`;
+                console.log('[Theme] Restored text2 from stored values:', text2);
+            }
+            
+            // CRITICAL: ALWAYS set textContent explicitly (never skip this step)
+            spans[0].textContent = text0;
+            spans[1].textContent = text1;
+            spans[2].textContent = text2;
+            
+            // Update colors with !important
+            spans[0].style.setProperty('color', blueColor, 'important');
+            spans[1].style.setProperty('color', greenColor, 'important');
+            spans[2].style.setProperty('color', orangeColor, 'important');
+            
+            // Ensure visibility
+            spans[0].style.setProperty('opacity', '1', 'important');
+            spans[1].style.setProperty('opacity', '1', 'important');
+            spans[2].style.setProperty('opacity', '1', 'important');
+            
+            spans[0].style.setProperty('visibility', 'visible', 'important');
+            spans[1].style.setProperty('visibility', 'visible', 'important');
+            spans[2].style.setProperty('visibility', 'visible', 'important');
+            
+            spans[0].style.setProperty('display', 'inline', 'important');
+            spans[1].style.setProperty('display', 'inline', 'important');
+            spans[2].style.setProperty('display', 'inline', 'important');
+            
+            // Also ensure the parent legend element is visible
+            legendElement.style.setProperty('display', 'block', 'important');
+            legendElement.style.setProperty('visibility', 'visible', 'important');
+            legendElement.style.setProperty('opacity', '1', 'important');
+            
+            // Final verification - ensure text is still there
+            if (!spans[0].textContent || spans[0].textContent.trim() === '' || spans[0].textContent.includes('undefined')) {
+                spans[0].textContent = text0;
+                console.warn('[Theme] Text0 was cleared or invalid, restored:', text0);
+            }
+            if (!spans[1].textContent || spans[1].textContent.trim() === '' || spans[1].textContent.includes('undefined')) {
+                spans[1].textContent = text1;
+                console.warn('[Theme] Text1 was cleared or invalid, restored:', text1);
+            }
+            if (!spans[2].textContent || spans[2].textContent.trim() === '' || spans[2].textContent.includes('undefined')) {
+                spans[2].textContent = text2;
+                console.warn('[Theme] Text2 was cleared or invalid, restored:', text2);
+            }
+            
+            console.log('[Theme] Legend colors updated successfully:', { 
+                blueColor, 
+                greenColor, 
+                orangeColor, 
+                text0: spans[0].textContent?.substring(0, 40) || 'MISSING',
+                text1: spans[1].textContent?.substring(0, 40) || 'MISSING',
+                text2: spans[2].textContent?.substring(0, 40) || 'MISSING'
+            });
+        } else {
+            console.warn('[Theme] Expected 3 spans, found:', spans.length);
+        }
+    };
+    
+    // Start update immediately and retry if needed
+    updateLegend(0);
+}
+
+function initializeThemeToggle() {
+    const saved = localStorage.getItem('theme') || 'light';
+    applyTheme(saved);
+    updateChartsTheme(saved);
+    
+    // Update legend colors on initial load
+    setTimeout(() => {
+        updateAIPerformanceLegendColors(saved);
+    }, 300);
+    
+    const btn = document.getElementById('themeToggle');
+    if (!btn) return;
+    const icon = btn.querySelector('i');
+    const text = btn.querySelector('.toggle-text');
+
+    const render = (mode) => {
+        if (mode === 'dark') {
+            icon.className = 'fas fa-sun';
+            text.textContent = 'Light';
+        } else {
+            icon.className = 'fas fa-moon';
+            text.textContent = 'Dark';
+        }
+    };
+
+    render(saved);
+    btn.addEventListener('click', () => {
+        const current = (localStorage.getItem('theme') || 'light') === 'dark' ? 'dark' : 'light';
+        const next = current === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('theme', next);
+        applyTheme(next);
+        render(next);
+        updateChartsTheme(next);
+        
+        // Update legend colors immediately and with retries
+        setTimeout(() => {
+            updateAIPerformanceLegendColors(next);
+        }, 50);
+        setTimeout(() => {
+            updateAIPerformanceLegendColors(next);
+        }, 200);
+        setTimeout(() => {
+            updateAIPerformanceLegendColors(next);
+        }, 500);
+        
+        // Resize charts to ensure proper redraw under new theme
+        if (typeof resizeCharts === 'function') {
+            setTimeout(() => {
+                resizeCharts();
+                // Force a full redraw by updating each chart
+                updateChartsTheme(next);
+                // Update legend one more time after chart resize
+                updateAIPerformanceLegendColors(next);
+            }, 100);
+        }
+    });
+}

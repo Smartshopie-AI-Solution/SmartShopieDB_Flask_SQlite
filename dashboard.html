@@ -863,9 +863,13 @@ rect.legend-mouseover-inactive,
                     </div>
                 </div>
                 <div class="header-right">
-                    <button class="notification-btn">
+                    <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+                        <i class="fas fa-moon"></i>
+                        <span class="toggle-text">Dark</span>
+                    </button>
+                    <button class="notification-btn" id="notificationBtn">
                         <i class="fas fa-bell"></i>
-                        <span class="notification-badge">5</span>
+                        <span class="notification-badge" id="notificationBadge"></span>
                     </button>
                     <button class="export-btn">
                         <i class="fas fa-download"></i>
@@ -1381,47 +1385,7 @@ rect.legend-mouseover-inactive,
                             </span>
                         </div>
                         <div class="activity-feed">
-                            
-                            
-                            
-                            
-                        <div class="activity-item">
-                                <div class="activity-icon chat">
-                                    <i class="fas fa-comments"></i>
-                                </div>
-                                <div class="activity-content">
-                      
-                                    <span class="activity-time"></span>
-                                </div>
-                                <div class="activity-badge">Converted</div>
-                            </div><div class="activity-item">
-                                <div class="activity-icon image">
-                                    <i class="fas fa-image"></i>
-                                </div>
-                                <div class="activity-content">
-                                    
-                                    <span class="activity-time"></span>
-                                </div>
-                                <div class="activity-badge">Processing</div>
-                            </div><div class="activity-item">
-                                <div class="activity-icon routine">
-                                    <i class="fas fa-calendar-check"></i>
-                                </div>
-                                <div class="activity-content">
-                                    
-                                    <span class="activity-time">12 minutes ago</span>
-                                </div>
-                                <div class="activity-badge">Premium</div>
-                            </div><div class="activity-item">
-                                <div class="activity-icon questionnaire">
-                                    <i class="fas fa-clipboard-list"></i>
-                                </div>
-                                <div class="activity-content">
-                                    
-                                    <span class="activity-time"></span>
-                                </div>
-                                <div class="activity-badge">High Intent</div>
-                            </div></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1457,7 +1421,7 @@ rect.legend-mouseover-inactive,
                         <div class="kpi-content">
                             <h3>Avg. Time to Convert</h3>
                             <div class="kpi-value">Loading...</div>
-                            <div class="kpi-change positive">
+                            <div class="kpi-change negative">
                                 <i class="fas fa-arrow-down"></i> Loading...
                             </div>
                         </div>
@@ -1779,30 +1743,10 @@ rect.legend-mouseover-inactive,
                     <div class="realtime-card">
                         <div class="realtime-header">
                             <h3>System Health</h3>
-                            <span class="status-indicator healthy">Optimal</span>
+                            <span class="status-indicator" id="systemHealthStatus">Loading...</span>
                         </div>
-                        <div class="health-metrics">
-                            <div class="metric">
-                                <span>API Response</span>
-                                <div class="metric-bar">
-                                    <div class="bar-fill healthy"></div>
-                                </div>
-                                <span></span>
-                            </div>
-                            <div class="metric">
-                                <span>CPU Usage</span>
-                                <div class="metric-bar">
-                                    <div class="bar-fill"></div>
-                                </div>
-                                <span></span>
-                            </div>
-                            <div class="metric">
-                                <span>Memory</span>
-                                <div class="metric-bar">
-                                    <div class="bar-fill"></div>
-                                </div>
-                                <span></span>
-                            </div>
+                        <div class="health-metrics" data-system-health>
+                            <div class="loading-shimmer" style="padding: 1rem; text-align: center; color: var(--text-secondary);">Loading system health data...</div>
                         </div>
                     </div>
                 </div>
@@ -1996,11 +1940,11 @@ rect.legend-mouseover-inactive,
                                 <i class="fas fa-users"></i>
                             </div>
                             <div class="status-content">
-                                <h3>Customer Data</h3>
-                                <div class="status-indicator connected">
-                                    <i class="fas fa-check-circle"></i> Connected
+                                <h3 data-api-title>Customer Data</h3>
+                                <div class="status-indicator" data-api-status>
+                                    <i class="fas fa-circle-notch fa-spin"></i> Loading...
                                 </div>
-                                <div class="last-sync">Last sync: 5 minutes ago</div>
+                                <div class="last-sync" data-api-sync>Loading...</div>
                             </div>
                         </div>
                         <div class="status-card products" data-api="products">
@@ -2008,11 +1952,11 @@ rect.legend-mouseover-inactive,
                                 <i class="fas fa-box"></i>
                             </div>
                             <div class="status-content">
-                                <h3>Product Catalog</h3>
-                                <div class="status-indicator connected">
-                                    <i class="fas fa-check-circle"></i> Connected
+                                <h3 data-api-title>Product Catalog</h3>
+                                <div class="status-indicator" data-api-status>
+                                    <i class="fas fa-circle-notch fa-spin"></i> Loading...
                                 </div>
-                                <div class="last-sync">Last sync: 2 hours ago</div>
+                                <div class="last-sync" data-api-sync>Loading...</div>
                             </div>
                         </div>
                         <div class="status-card orders" data-api="orders">
@@ -2020,11 +1964,11 @@ rect.legend-mouseover-inactive,
                                 <i class="fas fa-shopping-cart"></i>
                             </div>
                             <div class="status-content">
-                                <h3>Order Data</h3>
-                                <div class="status-indicator warning">
-                                    <i class="fas fa-exclamation-triangle"></i> Rate Limited
+                                <h3 data-api-title>Order Data</h3>
+                                <div class="status-indicator" data-api-status>
+                                    <i class="fas fa-circle-notch fa-spin"></i> Loading...
                                 </div>
-                                <div class="last-sync">Last sync: 10 minutes ago</div>
+                                <div class="last-sync" data-api-sync>Loading...</div>
                             </div>
                         </div>
                         <div class="status-card analytics" data-api="analytics">
@@ -2032,11 +1976,11 @@ rect.legend-mouseover-inactive,
                                 <i class="fas fa-chart-line"></i>
                             </div>
                             <div class="status-content">
-                                <h3>User Behavior</h3>
-                                <div class="status-indicator disconnected">
-                                    <i class="fas fa-times-circle"></i> Not Configured
+                                <h3 data-api-title>User Behavior</h3>
+                                <div class="status-indicator" data-api-status>
+                                    <i class="fas fa-circle-notch fa-spin"></i> Loading...
                                 </div>
-                                <div class="last-sync">Never synced</div>
+                                <div class="last-sync" data-api-sync>Loading...</div>
                             </div>
                         </div>
                     </div>

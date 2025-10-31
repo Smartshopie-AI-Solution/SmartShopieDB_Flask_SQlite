@@ -69,6 +69,23 @@ def ensure_tables(conn):
         )
         """
     )
+    # API configurations table
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_configurations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_type TEXT NOT NULL,
+            api_name TEXT NOT NULL,
+            api_url TEXT NOT NULL,
+            api_key TEXT,
+            status TEXT DEFAULT 'active',
+            last_sync TIMESTAMP,
+            sync_frequency TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     conn.commit()
 
     # --- Lightweight migrations: add expected columns if missing ---
@@ -1369,6 +1386,79 @@ def seed_billing_and_usage(conn):
     conn.commit()
     print("  billing_summary/usage_breakdown/payments/alerts: seeded")
 
+def seed_api_configurations(conn):
+    """Seed api_configurations table with demo API connection statuses"""
+    cur = conn.cursor()
+    # Clear existing to avoid duplicates
+    cur.execute("DELETE FROM api_configurations")
+    
+    now = datetime.utcnow()
+    # Calculate last sync times for different statuses
+    customers_last_sync = (now - timedelta(minutes=5)).isoformat()  # 5 minutes ago
+    products_last_sync = (now - timedelta(hours=2)).isoformat()  # 2 hours ago
+    orders_last_sync = (now - timedelta(minutes=10)).isoformat()  # 10 minutes ago
+    
+    # Seed API configurations with different statuses
+    configs = [
+        {
+            'api_type': 'customers',
+            'api_name': 'Customer Data API',
+            'api_url': 'https://demo-ecommerce.com/api/customers',
+            'api_key': 'demo_customer_key_123',
+            'status': 'active',  # Will display as "Connected"
+            'last_sync': customers_last_sync,
+            'sync_frequency': '5 minutes'
+        },
+        {
+            'api_type': 'products',
+            'api_name': 'Product Catalog API',
+            'api_url': 'https://demo-ecommerce.com/api/products',
+            'api_key': 'demo_product_key_456',
+            'status': 'active',  # Will display as "Connected"
+            'last_sync': products_last_sync,
+            'sync_frequency': '1 hour'
+        },
+        {
+            'api_type': 'orders',
+            'api_name': 'Order Data API',
+            'api_url': 'https://demo-ecommerce.com/api/orders',
+            'api_key': 'demo_order_key_789',
+            'status': 'rate_limited',  # Will display as "Rate Limited" with warning
+            'last_sync': orders_last_sync,
+            'sync_frequency': '10 minutes'
+        },
+        {
+            'api_type': 'analytics',
+            'api_name': 'User Behavior Analytics API',
+            'api_url': 'https://demo-ecommerce.com/api/analytics',
+            'api_key': None,  # Not configured
+            'status': 'not configured',  # Will display as "Not Configured"
+            'last_sync': None,  # Never synced
+            'sync_frequency': None
+        }
+    ]
+    
+    # Insert configurations
+    for config in configs:
+        cur.execute("""
+            INSERT INTO api_configurations 
+            (api_type, api_name, api_url, api_key, status, last_sync, sync_frequency, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            config['api_type'],
+            config['api_name'],
+            config['api_url'],
+            config['api_key'],
+            config['status'],
+            config['last_sync'],
+            config['sync_frequency'],
+            now.isoformat(),
+            now.isoformat()
+        ))
+    
+    conn.commit()
+    print("  api_configurations: seeded")
+
 def main():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -1406,6 +1496,7 @@ def main():
     seed_realtime_metrics(conn)
     seed_api_endpoints(conn)
     seed_billing_and_usage(conn)
+    seed_api_configurations(conn)
     
     print("=" * 60)
     print("[OK] Demo data seeded for 7/30/90/365-day ranges with duplicate checking.")
